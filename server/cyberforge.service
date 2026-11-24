@@ -1,0 +1,30 @@
+[Unit]
+Description=Cyber-Forge Arena game server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cyberforge
+Group=cyberforge
+WorkingDirectory=/opt/cyberforge
+ExecStart=/usr/bin/node /opt/cyberforge/server/server.mjs
+Environment=NODE_ENV=production
+Environment=PORT=8080
+Environment=DB_PATH=/opt/cyberforge/data/cyberforge.db
+# Behind HTTPS (Cloudflare Tunnel, Caddy, nginx) uncomment both:
+#Environment=COOKIE_SECURE=1
+#Environment=TRUST_PROXY=1
+Restart=on-failure
+RestartSec=3
+MemoryMax=200M
+
+# The service can write only its own data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/cyberforge/data
+
+[Install]
+WantedBy=multi-user.target

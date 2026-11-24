@@ -1,0 +1,1025 @@
+// Screens and game flow. Rules live in engine/, numbers in config/, ads in services/, juice in fx/.
+import {LOCATIONS, TIERS, KEEP_TIER, ARSENAL_MAX, COMBO, HEAT, OVERDRIVE, MAX_LOCKS, UPGRADES, CONTAINERS, LEAGUES, ARENA, CONTRACTS, ROMAN, GYRO} from '../config/gameData.js';
+import {minBet, betFor, spinIndex, sectorOf, makeCharge, chargeSplit, odds} from '../engine/gyro.js';
+import {createGyroWheel} from './gyroWheel.js';
+import {record, dexProgress, backfill} from '../engine/collection.js';
+import {showcaseHtml} from './showcase.js';
+import {ACH_CATS} from '../config/achievements.js';
+import {achStatus, readyToClaim, claimAch, bonuses} from '../engine/achievements.js';
+import {CLOUD, currentUser, cloudPush, flush as cloudFlush, isFrozen, onCloudNotice} from '../services/cloud.js';
+import {openAuth, doLogout} from './auth.js';
+import {SLOTS, SLOT_NAMES, forge, evaluate, bestOf, rollSlot, forgeCredits, rerollCost, comboMult, upgradeCost, sellPrice, locById} from '../engine/forge.js';
+import {leagueOf, squad, squadPower, tapPower, makeOpponent, opponentFromPlayer, opponentAt, duelOutcome, makeBots, tickBots, leaderboard} from '../engine/arena.js';
+import {showRewarded, showInterstitial, PLACEMENTS, log as adLog, setTestDuration, onAdPause, initPlatform, pushPlatformSave} from '../services/adBridge.js';
+import {ONLINE, syncProfile, fetchTop, fetchOpponent, renameOnline, nickname} from '../services/online.js';
+import {sfx, setMuted, setPaused} from '../fx/audio.js';
+import {initParticles, burst, shake, vibrate} from '../fx/particles.js';
+import {load, save, newContract, fresh} from './state.js';
+import {icon} from './icons.js';
+import {createForgeStage, stageLevel, inZone, IMPACT_DELAY} from './forgeStage.js';
+import {createDuelStage} from './duelStage.js';
+import {weaponThumb} from './weaponArt.js';
+
+const $ = (s, root = document) => root.querySelector(s);
+const fmt = n => Math.floor(n).toLocaleString('ru-RU');
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const TABS = [['forge', 'Кузня', 'hammer'], ['arena', 'Арена', 'swords'], ['arsenal', 'Арсенал', 'box'], ['shop', 'Магазин', 'cart'], ['quests', 'Квесты', 'target']];
+
+let S;                                                               // loaded in start(): after the cloud sync may have replaced the save
+const rt = {tab: 'forge', spin: null, lastTap: 0, lastManual: 0, streak: 0, heat: 0, odUntil: 0, cur: null, locks: {}, duel: null, lastFrame: performance.now(), auto: null,
+            stage: null, duelStage: null, temper: null, forceNext: null, wheel: null, gyroShare: GYRO.shares[0], gyroAdBusy: false, forceGyro: null, arsTab: 'stock', qTab: 'contracts'};
+const isOD = () => performance.now() < rt.odUntil;
+const curLoc = () => locById(S.loc);
+const persist = () => { if (isFrozen()) return; announceAch(); save(S); cloudPush(S); syncProfile(S); pushPlatformSave(S); };   // frozen: a login/logout is swapping the save
+
+/** A metal plate slides down when an achievement becomes ready (once per achievement). */
+function announceAch() {
+  const fresh = readyToClaim(S).filter(a => !S.ach.seen.includes(a.id));
+  if (!fresh.length) return;
+  S.ach.seen.push(...fresh.map(a => a.id));
+  const el = document.createElement('div');
+  el.className = 'ach-plate'; el.setAttribute('role', 'status');
+  el.innerHTML = `${icon('medal')}<div><small>Достижение готово</small><b></b></div>`;
+  el.querySelector('b').textContent = fresh.length === 1 ? fresh[0].n : `${fresh[0].n} и ещё ${fresh.length - 1}`;
+  $('#plates')?.append(el); setTimeout(() => el.remove(), 3400);
+  sfx.fanfare(5); vibrate([30, 40, 30]);
+}
+const lockCount = () => Object.keys(rt.locks).length;
+const upgradeSum = () => Object.values(S.up).reduce((a, b) => a + b, 0);
+const sceneOpts = () => ({level: stageLevel(upgradeSum()), hue: curLoc().hue, loc: S.loc, auto: S.up.auto, od: isOD()});
+/** The whole UI takes the location's colour (--h) and the scene its scenery. */
+function applyTheme() {
+  document.documentElement.style.setProperty('--h', curLoc().hue);
+  document.body.dataset.loc = S.loc;
+}
+
+/* ---------- shared helpers ---------- */
+
+function toast(text) {
+  const el = document.createElement('div');
+  el.className = 'toast'; el.textContent = text;
+  $('#toasts').append(el); setTimeout(() => el.remove(), 2600);
+}
+function hud() {
+  $('#credits').textContent = fmt(S.credits);
+  $('#trophies').textContent = fmt(S.trophies);
+  $('#mute').innerHTML = icon(S.muted ? 'mute' : 'sound');
+  $('#mute').setAttribute('aria-label', S.muted ? 'Включить звук' : 'Выключить звук');
+  $('[data-tab="quests"]').classList.toggle('has-dot', S.contracts.some(c => c.p >= c.n) || readyToClaim(S).length > 0);
+}
+function addCredits(n) { S.credits += n; S.stats.credits += n; progress('credits', n); }
+function progress(k, add, isMax = false) {
+  for (const c of S.contracts) if (c.k === k && c.p < c.n) c.p = Math.min(c.n, isMax ? Math.max(c.p, add) : c.p + add);
+}
+/** Каталог находок: records the artifact's names; a first-ever name gets a toast and a coin chime (never for the auto-hammer). */
+function discover(a, loud) {
+  const fresh = record(S.dex, a).filter(c => c.fresh);
+  if (!fresh.length || !loud) return;
+  toast(fresh.length === 1 ? `Новая находка: ${fresh[0].n}` : `Новые находки: ${fresh.length}`);
+  sfx.coin();
+}
+function fillContracts() { while (S.contracts.length < 3) S.contracts.push(newContract(S.contracts.map(c => c.k))); }
+function ensureBots() {
+  const li = leagueOf(S.trophies);
+  if (!S.bots || S.botsLeague !== li) { S.bots = makeBots(S.trophies); S.botsLeague = li; }
+}
+
+/** Arsenal insert / replace. Full arsenal: the weakest artifact is sold to make room. Returns the id or null. */
+function storeArtifact(a, e, replaceId = null) {
+  const art = {...a, id: replaceId ?? S.nextId++, score: e.score, tier: e.tier, power: Math.round(e.power * (1 + bonuses(S).craft)), t: Date.now()};   // craft bonus from achievements + Каталог
+  if (replaceId != null) {
+    const i = S.arsenal.findIndex(x => x.id === replaceId);
+    if (i >= 0) { S.arsenal[i] = art; return art.id; }
+  }
+  if (S.arsenal.length >= ARSENAL_MAX) {
+    const low = S.arsenal.reduce((m, x) => x.power < m.power ? x : m);
+    if (low.power >= art.power) { addCredits(sellPrice(art)); toast('Арсенал полон — артефакт продан'); return null; }
+    S.arsenal = S.arsenal.filter(x => x !== low); addCredits(sellPrice(low));
+  }
+  S.arsenal.push(art);
+  return art.id;
+}
+
+function artCard(a) {
+  const t = TIERS[a.tier];
+  return `<div class="art${a.tempered ? ' tempered' : ''}" style="--tc:${t.c}"><img class="wthumb" src="${weaponThumb(a)}" alt="" width="120" height="48">
+    <div class="art-tier">${t.n}${a.tempered ? ' · ★' : ''}</div>
+    <div class="art-name">${a.el.n} · ${a.wp.n}</div>
+    <div class="art-sub">${a.pk.n} ${ROMAN[a.pk.r]} · <span class="num">#${a.idx}</span></div>
+    <div class="art-pow">${icon('bolt')}<b class="num">${fmt(a.power)}</b></div></div>`;
+}
+
+/* ---------- shell & navigation ---------- */
+
+function shell() {
+  $('#app').innerHTML = `<header class="hud">
+      <div class="logo">КИБЕР<span>КУЗНЯ</span></div>
+      <div class="pill" title="Кредиты">${icon('coin')}<b id="credits" class="num">0</b></div>
+      <div class="pill gold" title="Кубки">${icon('trophy')}<b id="trophies" class="num">0</b></div>
+      <button class="iconbtn" id="mute"></button>
+    </header>
+    <main id="screen"></main>
+    <div id="plates" aria-live="polite"></div>
+    <nav class="tabs" aria-label="Разделы">${TABS.map(([id, n, ic]) =>
+      `<button data-tab="${id}">${icon(ic)}<span>${n}</span></button>`).join('')}</nav>`;
+}
+
+function show(tab) {
+  if (rt.duel && !rt.duel.done) return;                 // a running duel can't be left
+  if (rt.duel?.done && tab !== 'arena') { duelDone(tab); return; }
+  if (rt.spin) rt.spin.finish();
+  if (rt.temper) endTemper(null, true);
+  rt.wheel?.finish(); rt.wheel = null;                  // leaving mid-spin lands the wheel at once: the stake is never lost
+  rt.stage?.stop(); rt.stage = null;
+  rt.tab = tab;
+  document.body.dataset.tab = tab;
+  if (tab === 'arena' && S.tut === 3) { S.tut = 99; persist(); $('[data-tab="arena"]')?.classList.remove('tut-pulse'); }
+  document.querySelectorAll('.tabs button').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('on', on);
+    on ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current');
+  });
+  ({forge: renderForge, arena: renderArena, arsenal: renderArsenal, shop: renderShop, quests: renderQuests})[tab]();
+  scrollTo(0, 0);
+}
+
+/* ---------- forge ---------- */
+
+function renderForge() {
+  const L = curLoc();
+  rt.wheel?.finish();                                   // a location switch re-renders the forge mid-spin
+  $('#screen').innerHTML = `<section class="view forge">
+    <div class="plate"><small>CYBER FORGE</small><b>${L.name}</b></div>
+    <div class="locs">${LOCATIONS.filter(l => S.unlocked.includes(l.id) || l === LOCATIONS.find(x => !S.unlocked.includes(x.id))).map(l => S.unlocked.includes(l.id)
+      ? `<button class="chip ${l.id === S.loc ? 'on' : ''}" style="--h:${l.hue}" data-act="loc" data-id="${l.id}" aria-pressed="${l.id === S.loc}">${l.name} <small class="num">×${l.mult}</small></button>`
+      : `<button class="chip locked" data-act="tab" data-id="shop">${icon('lock')}${l.name} <small class="num">${fmt(l.cost)}</small></button>`).join('')}</div>
+    <div class="forge-grid">
+    <aside class="side side-l" id="sideL" aria-label="Достижения"></aside>
+    <div class="forge-main">
+    <div class="stage-wrap"><canvas id="forgeStage" class="forge-stage" aria-hidden="true"></canvas>
+      <div class="temper" id="temper" hidden><div class="temper-bar"><i class="zone"></i><i class="marker"></i></div><span id="temperTxt">Жми в золотой зоне!</span></div></div>
+    <div class="anvil" id="anvil" style="--h:${L.hue}">
+      ${SLOTS.map(s => `<div class="slot slot-${s}" data-slot="${s}">
+          <div class="slot-top"><span class="slot-name">${SLOT_NAMES[s]}</span>
+            <button class="lockbtn" data-act="lock" data-id="${s}" aria-label="Замок: ${SLOT_NAMES[s]}" aria-pressed="false">${icon('unlock')}</button></div>
+          <div class="slot-val" id="sv-${s}">—</div><div class="slot-rank" id="sr-${s}"></div></div>`).join('')}
+    </div>
+    <div class="verdict" id="verdict" aria-live="polite"><span class="hint">${tutHint()}</span></div>
+    <div class="console">
+      <div class="lever" title="Реактор: быстрые тапы греют, на 100% — OVERDRIVE">
+        <div class="lever-glass"><i id="heatFill"></i></div>
+        <span id="heatTxt" class="num"></span>
+      </div>
+      <div class="console-mid">
+        <div class="forge-dock"><button class="forgebtn ${S.tut === 0 ? 'tut-pulse' : ''}" id="forgeBtn">КОВАТЬ</button><span class="gyro-badge" id="gyroBadge" hidden></span></div>
+        <div class="meter combo"><i id="comboFill"></i><span id="comboTxt" class="num"></span></div>
+      </div>
+    </div>
+    <div class="row2">
+      <button class="btn ghost" id="rerollBtn" data-act="reroll"></button>
+      <button class="btn ad" id="rerollAdBtn" data-act="rerollAd">${icon('play')}Перековать бесплатно</button>
+    </div>
+    <nav class="tools" aria-label="Механики кузни">
+      <button class="tool" id="gyroOpen" data-act="gyroOpen" aria-haspopup="dialog">${icon('target')}<span>Гиро</span><b class="num" id="gyroMini"></b></button>
+      <button class="tool" id="dexLink" data-act="openDex"></button>
+      <button class="tool ad" id="odAdBtn" data-act="odAd">${icon('bolt')}<span>Overdrive</span><small>реклама</small></button>
+    </nav>
+    </div>
+    <aside class="side side-r" id="sideR" aria-label="Улучшения и Арена"></aside>
+    </div>
+  </section>
+  <div class="drawer" id="gyroDrawer" hidden>
+    <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="gyroTitle">
+      <div class="drawer-head"><span class="lamp"></span><b id="gyroTitle">ГИРО-РЕАКТОР</b>
+        <button class="iconbtn" data-act="gyroClose" aria-label="Закрыть">${icon('close')}</button></div>
+      <section class="gyro" id="gyro" aria-label="Гиро-Реактор">
+        <canvas id="gyroWheel" class="gyro-wheel" role="img" aria-label="Колесо множителей: размер сектора равен шансу"></canvas>
+        <div class="gyro-body" id="gyroBody" aria-live="polite"></div>
+        <ul class="gyro-odds">${GYRO_ODDS.map(o => `<li><i style="background:${o.c}"></i>${o.n} <span class="num">${o.p}%</span></li>`).join('')}</ul>
+      </section>
+    </div>
+  </div>`;
+  applyTheme();
+  const btn = $('#forgeBtn');
+  btn.addEventListener('pointerdown', e => { e.preventDefault(); forgeTap('tap'); });   // no 300 ms click delay
+  btn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); forgeTap('tap'); } });
+  rt.stage?.stop();
+  rt.stage = createForgeStage($('#forgeStage'), {onImpact: p => sfx.impact(p)});
+  rt.stage.setScene(sceneOpts());
+  rt.stage.setArtifact(rt.cur ? artLook(rt.cur) : null);
+  rt.stage.start();
+  rt.wheel = createGyroWheel($('#gyroWheel'), {onTick: () => sfx.tick()});
+  if (rt.cur) { SLOTS.forEach(s => paintSlot(s, rt.cur.a[s], false)); announce(rt.cur.e, null, rt.cur.id, 'quiet'); }
+  updateForgeControls();
+}
+
+function paintSlot(s, v, spinning) {
+  const val = $('#sv-' + s), rank = $('#sr-' + s), card = val?.closest('.slot');
+  if (!val) return;
+  const item = typeof v !== 'string';
+  val.textContent = item ? v.n : v;
+  rank.textContent = item ? (v.r === 5 ? 'МИФ Ω' : 'РАНГ ' + ROMAN[v.r]) : '';
+  card.dataset.rank = item ? v.r : '';
+  card.classList.toggle('spin', spinning);
+}
+
+/** Slots spin, then stop one by one left to right. Locked slots stand still. */
+function spinSlots(a, slots, dur, done, {stops, riser = false, locked = false} = {}) {
+  const L = locById(a.loc);
+  if (!$('#anvil') || dur <= 0) { slots.forEach(s => paintSlot(s, a[s], false)); rt.spin = null; done(); return; }
+  const t0 = performance.now(), stopped = new Set();
+  let raf = 0, lastTick = 0, over = false;
+  const land = (s, i) => {
+    stopped.add(s); paintSlot(s, a[s], false);
+    const card = $(`.slot[data-slot="${s}"]`);
+    card?.classList.remove('land'); void card?.offsetWidth; card?.classList.add('land');
+    sfx.slotStop(i);
+  };
+  const finish = () => {
+    if (over) return; over = true; cancelAnimationFrame(raf);
+    slots.forEach((s, i) => { if (!stopped.has(s)) land(s, i); });
+    rt.spin = null; done();
+  };
+  const step = now => {
+    const el = now - t0;
+    slots.forEach((s, i) => {
+      if (stopped.has(s)) return;
+      if (el < dur * (stops?.[i] ?? 0.35 + 0.65 * (i + 1) / slots.length)) paintSlot(s, rollSlot(s, L), true); else land(s, i);
+    });
+    if (now - lastTick > 60) { riser ? sfx.riser(el / dur) : sfx.tick(); lastTick = now; }
+    if (el < dur) raf = requestAnimationFrame(step); else finish();
+  };
+  rt.spin = {finish, locked};
+  raf = requestAnimationFrame(step);
+}
+
+/** kind: 'tap' | 'auto' | a container object. The animation is directed by the rarity that is about to land. */
+function forgeTap(kind = 'tap') {
+  if (rt.duel || $('.ad-modal')) return;
+  const now = performance.now();
+  if (rt.temper) { if (kind === 'tap') endTemper(temperPos()); return; }   // during tempering the forge button tempers
+  if (rt.spin) {
+    if (kind !== 'tap') return;
+    if (rt.spin.locked) { rt.lastTap = now; return; }                // big reveals play out; taps keep the combo alive
+    rt.spin.finish(); return;                                         // a tap mid-spin lands every slot now
+  }
+  if (kind === 'auto' && (lockCount() || rt.cur?.canRetry)) return;  // the auto-hammer never wipes locks or an open re-temper offer
+  const container = typeof kind === 'object' ? kind : null;
+  if (kind === 'tap') {
+    rt.streak = now - rt.lastTap < COMBO.window ? rt.streak + 1 : 0;
+    rt.lastTap = rt.lastManual = now;
+    S.stats.maxCombo = Math.max(S.stats.maxCombo, rt.streak);
+  }
+  const od = isOD();
+  const forced = !!rt.forceNext;
+  const r = rt.forceNext ?? bestOf(S.loc, container ? container.tries : 1 + S.up.luck + (od ? OVERDRIVE.luck : 0));
+  rt.forceNext = null;
+  if (!forced && kind === 'tap' && S.tut < 2 && S.stats.forges === 2) Object.assign(r, tutRare());   // onboarding: the 3rd strike is always «Редкий»
+  if (kind !== 'auto') rt.locks = {};                                // a manual forge or a container starts a new artifact
+  $('#anvil')?.classList.toggle('container', !!container);
+  const plan = forgePlan(r.e.tier, kind, od), st = rt.stage;
+  if (st) {
+    st.setArtifact(null);
+    if (plan.cocoon) st.cocoon(TIERS[r.e.tier].c);
+    plan.strikes.forEach((at, i) => st.strike({delay: Math.max(0, at - IMPACT_DELAY), power: plan.power[i] ?? 1, hitstop: plan.hitstop, drone: kind === 'auto'}));
+  }
+  spinSlots(r.a, SLOTS, plan.dur, () => onForged(r, kind, od), plan);
+  updateForgeControls();
+}
+
+/* ---------- onboarding: strike → guaranteed «Редкий» on the 3rd forge → tempering → the Arena ---------- */
+
+function tutHint() {
+  if (S.tut === 0) return 'Ударь по раскалённой заготовке — жми КОВАТЬ';
+  if (S.tut === 1) return 'Ещё пара ударов — и выпадет первый «Редкий» артефакт';
+  return 'Жми КОВАТЬ. Быстрые тапы разгоняют комбо и реактор.';
+}
+function tutRare() {
+  const a = forge(S.loc);
+  a.el = {...a.el, r: 3}; a.wp = {...a.wp, r: 3}; if (a.pk.r !== 5) a.pk = {...a.pk, r: 3};   // rank III resonance = «Редкий»
+  return {a, e: evaluate(a)};
+}
+
+/* ---------- side panels (wide screens): achievements · forge upgrades · PvP card ---------- */
+
+const SIDE_UPS = ['auto', 'mult', 'reactor'];
+function renderSides() {
+  const l = $('#sideL'), r = $('#sideR');
+  if (!l || !r) return;
+  const all = achStatus(S), done = all.filter(a => a.claimed).length, ready = all.filter(a => a.ready && !a.claimed);
+  const next = [...ready, ...all.filter(a => !a.ready).sort((a, b) => b.pct - a.pct)].slice(0, 3);
+  l.innerHTML = `<div class="panel"><div class="panel-head">${icon('trophy')}<b>Достижения</b><span class="num">${done}/${all.length}</span></div>
+    ${next.map(a => `<div class="mini-ach ${a.ready ? 'ready' : ''}"><div class="mini-ach-n">${a.n}</div>
+      <div class="prog"><i style="width:${Math.round(a.pct * 100)}%"></i></div></div>`).join('')}
+    <button class="btn ${ready.length ? '' : 'ghost'} wide" data-act="openAch">${ready.length ? `Забрать награды · ${ready.length}` : 'Все достижения'}</button></div>`;
+  const li = leagueOf(S.trophies);
+  r.innerHTML = `<div class="panel"><div class="panel-head">${icon('hammer')}<b>Улучшения кузни</b></div>
+    ${SIDE_UPS.map(id => {
+      const u = UPGRADES[id], max = S.up[id] >= u.max, c = upgradeCost(u, S.up[id]);
+      return `<div class="mini-up"><div><b>${u.n}</b><small class="num">ур. ${S.up[id]}/${u.max}</small></div>
+        <button class="btn small" data-act="up" data-id="${id}" ${max || S.credits < c ? 'disabled' : ''}>${max ? 'МАКС' : `<span class="num">${fmt(c)}</span>`}</button></div>`;
+    }).join('')}</div>
+    <div class="panel"><div class="panel-head">${icon('swords')}<b>PvP-Арена</b></div>
+      <div class="mini-row"><span>Лига</span><b>${LEAGUES[li].n}</b></div>
+      <div class="mini-row"><span>Кубки</span><b class="num">${fmt(S.trophies)}</b></div>
+      <button class="btn wide" data-act="tab" data-id="arena">В бой</button></div>`;
+}
+
+/* ---------- Достижения screen (a sub-tab of «Квесты») ---------- */
+
+function achHtml() {
+  const all = achStatus(S), b = bonuses(S), reward = a => a.reward.credits ? `<span class="num">+${fmt(a.reward.credits)}</span>`
+    : a.reward.box ? `Контейнер «${CONTAINERS.find(c => c.id === a.reward.box).n}»`
+    : a.reward.craft ? `+${Math.round(a.reward.craft * 100)}% мощь крафта` : `+${Math.round(a.reward.arena * 100)}% награды Арены`;
+  return `<div class="card bonus-card"><div class="row"><div class="grow"><div class="label">Мощь крафта</div><b class="num big">+${Math.round(b.craft * 100)}%</b></div>
+      <div class="grow"><div class="label">Награды Арены</div><b class="num big">+${Math.round(b.arena * 100)}%</b></div></div>
+      <p class="small">Каждые 10 находок в Витрине дают +5% к мощи новых артефактов.</p></div>
+    ${ACH_CATS.map(c => `<h2>${c.n}</h2><div class="ach-list">${all.filter(a => a.cat === c.id).map(a => `
+      <div class="ach ${a.claimed ? 'claimed' : a.ready ? 'ready' : ''}">
+        <div class="ach-ic">${icon('medal')}</div>
+        <div class="grow"><b>${a.n}</b><div class="small">${a.d}</div>
+          <div class="prog"><i style="width:${Math.round(a.pct * 100)}%"></i></div>
+          <div class="small ach-rw">Награда: ${reward(a)}</div></div>
+        ${a.claimed ? '<span class="badge">ПОЛУЧЕНО</span>' : `<button class="btn small" data-act="claimAch" data-id="${a.id}" ${a.ready ? '' : 'disabled'}>Забрать</button>`}
+      </div>`).join('')}</div>`).join('')}`;
+}
+
+/** Timeline per rarity: spin length, when each slot stops, when the hammer lands (ms from the start). */
+function forgePlan(tier, kind, od) {
+  if (REDUCED) return {dur: 0, strikes: [0], power: [1]};
+  if (typeof kind === 'object') return {dur: 1500, stops: [0.3, 0.5, 0.75, 1], strikes: [450, 1000, 1500], power: [1, 1, 2], locked: true};
+  if (kind === 'auto') return {dur: 320, strikes: [320], power: [0.6]};
+  if (tier >= 4) return {dur: 1750, stops: [0.25, 0.5, 0.78, 1], strikes: [440, 980, 1750], power: [1.2, 1.5, 2.5],
+                         hitstop: true, cocoon: true, riser: true, locked: true};
+  if (tier >= KEEP_TIER) return {dur: 1150, stops: [0.2, 0.35, 0.68, 1], strikes: [1150], power: [1.6], riser: true, locked: true};
+  const dur = od || rt.streak > 4 ? 280 : 340;
+  return {dur, strikes: [dur], power: [1]};
+}
+
+function onForged({a, e}, kind, od) {
+  const container = typeof kind === 'object', combo = kind === 'tap' ? comboMult(rt.streak, COMBO) : 1;
+  S.stats.forges++; S.stats.tiers[e.tier]++;
+  if (kind === 'tap' && S.tut < 2) {
+    S.tut = e.tier >= KEEP_TIER ? 2 : 1;
+    $('#forgeBtn')?.classList.remove('tut-pulse');
+  }
+  discover(a, kind !== 'auto');
+  e.tags.forEach(t => { S.stats.tags[t.id] = (S.stats.tags[t.id] || 0) + 1; });
+  progress('forges', 1);
+  if (e.tier >= KEEP_TIER) progress('rare', 1);
+  if (e.tags.some(t => t.id === 'mirror')) progress('mirror', 1);
+  let gain = 0, ch = null;
+  if (!container) {
+    let earned = forgeCredits(e.score, {locMult: locById(a.loc).mult, multLvl: S.up.mult, combo, overdrive: od}), payout = 0;
+    if (kind === 'tap' && S.gyro.charge) {                            // Гиро-Реактор charge: only a manual forge spends it
+      ch = S.gyro.charge; S.gyro.charge = null;
+      ({earned, payout} = chargeSplit(earned, ch));
+      S.gyro.returned += payout;
+    }
+    addCredits(earned);                                               // counts for stats and the «Заработай» contract
+    S.credits += payout;                                              // the stake coming back is not "earned"
+    gain = earned + payout;                                           // the one number for the verdict and the toast = the balance change
+    if (ch && !od && GYRO.heat[ch.m]) rt.heat = Math.min(HEAT.max, rt.heat + GYRO.heat[ch.m]);
+  }
+  const id = container || e.tier >= KEEP_TIER ? storeArtifact(a, e) : null;
+  rt.cur = {a, e, id};
+  if (!S.stats.best || e.score > S.stats.best.score) S.stats.best = {...a, score: e.score, tier: e.tier, power: e.power};
+  if (!od && !container && (rt.heat += HEAT.perForge * (1 + 0.25 * S.up.reactor) * combo) >= HEAT.max) startOverdrive();
+  if (kind === 'tap' && e.tier >= KEEP_TIER) rt.lastTap = performance.now();   // a long reveal must not break the combo
+  announce(e, gain, id, kind === 'auto' ? 'auto' : 'loud');
+  stageReveal(rt.cur, kind);
+  if (ch) {
+    toast(`Гиро-заряд ×${ch.m}: +${fmt(gain)}`); sfx.coin();
+    if (ch.m >= 5) { rt.stage?.pillar('#ff3366'); rt.stage?.shockwave('#ff3366'); burst($('#forgeBtn'), 90, ['#ff3366', '#ffffff', '#ffcc33']); shake($('#screen'), true); }
+    else if (ch.m >= 3) rt.stage?.shockwave(GYRO.sectors.find(s => s.m === ch.m).c);
+  }
+  persist(); hud(); updateForgeControls();
+  if (kind !== 'auto' && id != null && e.tier >= KEEP_TIER) startTemper();
+}
+
+const artLook = cur => ({...cur.a, tempered: !!cur.tempered});
+
+/** The scene when the slots land: the weapon appears; rare+ sends a shockwave; legendary+ a light pillar and a shattered cocoon. */
+function stageReveal(cur, kind) {
+  const st = rt.stage;
+  if (!st) return;
+  st.setArtifact(artLook(cur));
+  if (kind === 'auto') return;
+  const c = TIERS[cur.e.tier].c;
+  if (cur.e.tier >= KEEP_TIER) st.shockwave(c);
+  if (cur.e.tier >= 4) { st.pillar(c); st.shatter(c); sfx.crack(); }
+}
+
+function announce(e, gain, id, mode) {
+  const t = TIERS[e.tier], anvil = $('#anvil'), v = $('#verdict');
+  if (!v) return;
+  anvil.style.setProperty('--tc', t.c);
+  anvil.dataset.tier = e.tier;
+  v.innerHTML = `<div class="tier" style="color:${t.c}">${t.n}</div>
+    <div class="meta num">Очки ${e.score} · мощь ${fmt(S.arsenal.find(x => x.id === id)?.power ?? e.power)}${id != null ? ' · в Арсенале' : ''}</div>
+    <div class="tags">${e.tags.map(x => `<span class="tag">${x.label}</span>`).join('')}</div>
+    ${gain ? `<div class="gain num">+${fmt(gain)}</div>` : ''}
+    ${rt.cur?.tempered ? '<div class="tempered-note">★ Закалён · мощь +25%</div>' : ''}
+    ${rt.cur?.canRetry ? `<button class="btn ad" data-act="temperAd">${icon('play')}Перезакалить (реклама)</button>` : ''}`;
+  if (mode === 'quiet' || (mode === 'auto' && e.tier < KEEP_TIER)) return;
+  v.querySelector('.tier').classList.add('pop');
+  if (e.tier >= 1) sfx.fanfare(e.tier);
+  if (e.tier >= 3) vibrate(e.tier >= 4 ? [60, 40, 140] : 35);
+  if (e.tier >= 4) burst(anvil, 35 * e.tier, [t.c, '#ffffff', '#ffcc33', '#00f0ff']);   // page-wide confetti only for the top tiers; the scene covers the rest
+  if (e.tier >= 4) shake($('#screen'), e.tier >= 5);   // not <body>: a transformed body would drag the fixed tab bar along
+}
+
+function updateForgeControls() {
+  const rb = $('#rerollBtn');
+  if (!rb) return;
+  const n = lockCount(), cost = rt.cur ? rerollCost(locById(rt.cur.a.loc).mult, n) : 0, can = rt.cur && n > 0 && !rt.spin && !rt.temper;
+  rb.innerHTML = `${icon('lock')}Перековать <span class="num">· ${fmt(cost)}</span>`;
+  rb.disabled = !can || S.credits < cost;
+  $('#rerollAdBtn').disabled = !can;
+  $('#odAdBtn').disabled = isOD();
+  document.querySelectorAll('.lockbtn').forEach(b => {
+    const on = !!rt.locks[b.dataset.id];
+    b.setAttribute('aria-pressed', on); b.classList.toggle('on', on);
+    b.innerHTML = icon(on ? 'lock' : 'unlock');
+    b.disabled = !rt.cur || !!rt.spin;
+  });
+  renderGyro(); renderDexLink(); renderSides();
+}
+
+function renderDexLink() {
+  const b = $('#dexLink');
+  if (!b) return;
+  const p = dexProgress(S.dex);
+  b.innerHTML = `${icon('box')}<span>Витрина</span><b class="num">${p.found}/${p.total}</b>`;
+  b.setAttribute('aria-label', `Каталог находок: ${p.found} из ${p.total}`);
+  const mini = $('#gyroMini');
+  if (mini) mini.textContent = S.gyro.charge ? `×${S.gyro.charge.m}` : rt.wheel?.spinning ? '…' : '';
+}
+
+/* ---------- Гиро-Реактор: stake credits, spin the wheel, the result charges the next manual forge ---------- */
+
+const GYRO_ODDS = odds().map(o => ({...o, p: Math.round(o.p)}));
+
+function renderGyro() {
+  const body = $('#gyroBody'), badge = $('#gyroBadge');
+  if (!body) return;
+  const ch = S.gyro.charge, spinning = !!rt.wheel?.spinning, mult = curLoc().mult, stake = betFor(S.credits, rt.gyroShare, mult);
+  badge.hidden = !ch;
+  if (ch) {
+    badge.style.setProperty('--gc', GYRO.sectors.find(s => s.m === ch.m).c);
+    badge.innerHTML = `${icon('bolt')}Заряд ×${ch.m} <span class="num">+${fmt(ch.payout)}</span>`;
+  }
+  let action;
+  if (spinning) action = '<div class="gyro-status">Реактор раскручивается…</div>';
+  else if (ch) action = `<div class="gyro-status">Заряд ×${ch.m} ждёт ковку: вернётся <b class="num">${fmt(ch.payout)}</b>${ch.m >= 2 ? `, кредиты ковки ×${ch.m}` : ''}${GYRO.heat[ch.m] ? ', реактор +' + GYRO.heat[ch.m] + '%' : ''}. Жми КОВАТЬ.</div>
+      ${ch.m < 1 && !ch.respun ? `<button class="btn ad" data-act="gyroAd" ${rt.gyroAdBusy ? 'disabled' : ''}>${icon('play')}Повторный спин (реклама)</button>` : ''}`;
+  else if (!stake) action = `<div class="gyro-status">Ставка от <b class="num">${fmt(minBet(mult))}</b> кредитов. Куй дальше или запусти спин за рекламу.</div>
+      <button class="btn ad" data-act="gyroAd" ${rt.gyroAdBusy ? 'disabled' : ''}>${icon('play')}Аварийный спин (реклама)</button>`;
+  else action = `<button class="btn" data-act="gyroSpin">Спин · <span class="num">${fmt(stake)}</span></button>`;
+  body.innerHTML = `<div class="gyro-head">ГИРО-РЕАКТОР</div>
+    <div class="gyro-bets" role="group" aria-label="Размер ставки">${GYRO.shares.map(s =>
+      `<button class="chip ${s === rt.gyroShare ? 'on' : ''}" data-act="gyroBet" data-id="${s}" aria-pressed="${s === rt.gyroShare}" ${ch || spinning ? 'disabled' : ''}>${s * 100}%</button>`).join('')}</div>
+    ${action}`;
+}
+
+/** paid = false: the spin was funded by an ad (respin after Сбой, or the rescue spin). */
+function gyroSpin(stake, paid = true, respun = false) {
+  if (!rt.wheel || rt.wheel.spinning || S.gyro.charge || rt.duel || !stake) return;
+  if (paid) {
+    if (S.credits < stake) { toast('Не хватает кредитов'); return; }
+    S.credits -= stake; S.gyro.wagered += stake;
+  }
+  S.gyro.spins++;
+  const i = rt.forceGyro ?? spinIndex(), sec = sectorOf(i);
+  rt.forceGyro = null;
+  persist(); hud();
+  $('#gyro')?.classList.remove('flash');
+  rt.wheel.spinTo(i, REDUCED ? 0 : GYRO.spinMs, () => {            // also runs at once if the player leaves the forge mid-spin
+    S.gyro.charge = {...makeCharge(stake, sec.m), respun};
+    S.gyro.best = Math.max(S.gyro.best, sec.m);
+    if (sec.m === 3) S.gyro.hits3++;
+    if (sec.m === 5) S.gyro.hits5++;
+    persist();
+    const el = $('#gyroWheel');
+    if (sec.m < 1) { sfx.temperFail(); burst(el, 16, ['#6b7a99', '#00f0ff', '#ffffff']); }
+    else { sfx.fanfare(Math.min(5, GYRO.sectors.indexOf(sec) + 1)); vibrate(sec.m >= 3 ? [40, 30, 90] : 25); }
+    if (sec.m >= 5) { burst(el, 140, ['#ff3366', '#ffcc33', '#ffffff', '#00f0ff']); $('#gyro')?.classList.add('flash'); shake($('#screen'), true); }
+    else if (sec.m >= 3) burst(el, 50, [sec.c, '#ffffff']);
+    renderGyro();
+  });
+  renderGyro();
+}
+
+async function gyroAd() {
+  if (rt.gyroAdBusy || !rt.wheel || rt.wheel.spinning || rt.duel) return;
+  const ch = S.gyro.charge, respin = !!ch && ch.m < 1 && !ch.respun;
+  if (ch && !respin) return;
+  if (!ch && betFor(S.credits, rt.gyroShare, curLoc().mult)) return;    // the rescue spin is only for a player who can't afford a stake
+  const stake = respin ? ch.stake : minBet(curLoc().mult);
+  rt.gyroAdBusy = true; renderGyro();
+  let ok = false;
+  try { ok = await showRewarded(PLACEMENTS.GYRO); }                   // never throws; false on close, error or a busy ad layer
+  finally { rt.gyroAdBusy = false; }
+  if (!ok) { toast('Реклама не досмотрена: спина нет'); renderGyro(); return; }
+  if (respin && S.gyro.charge === ch) S.gyro.charge = null;            // the Сбой result is replaced by the new spin
+  if (S.gyro.charge) { renderGyro(); return; }
+  gyroSpin(stake, false, respin);
+}
+
+function toggleLock(s) {
+  if (!rt.cur || rt.spin) return;
+  if (rt.locks[s]) delete rt.locks[s];
+  else if (lockCount() >= MAX_LOCKS) return toast(`Можно закрыть максимум ${MAX_LOCKS} слота`);
+  else rt.locks[s] = true;
+  sfx.lock(); vibrate(10); updateForgeControls();
+}
+
+function reroll(free) {
+  if (!rt.cur || rt.spin || rt.temper || rt.duel) return;
+  const n = lockCount();
+  if (!n) { toast('Закрой замком 1–2 удачных слота — остальные перекуются'); return; }
+  const prev = rt.cur, cost = rerollCost(locById(prev.a.loc).mult, n);
+  // The Arsenal copy this re-forge may upgrade: the shown artifact itself, or the one a weaker re-forge stayed bound to.
+  const bindId = prev.id ?? prev.bind ?? null, bound = bindId != null ? S.arsenal.find(x => x.id === bindId) : null;
+  if (!free) {
+    if (S.credits < cost) { toast('Не хватает кредитов'); return; }
+    S.credits -= cost; hud();
+  }
+  const od = isOD();
+  const r = bestOf(prev.a.loc, 1 + S.up.luck + (od ? OVERDRIVE.luck : 0), Math.random, rt.locks, prev.a);
+  rt.stage?.setArtifact(null);
+  rt.stage?.strike({delay: REDUCED ? 0 : 600 - IMPACT_DELAY, power: 1.3});
+  spinSlots(r.a, SLOTS.filter(s => !rt.locks[s]), REDUCED ? 0 : 600, () => {
+    S.stats.rerolls++; progress('reroll', 1); discover(r.a, true);
+    if (r.e.tier >= KEEP_TIER) progress('rare', 1);
+    let id = null, bind = null;
+    if (bound && r.e.score >= bound.score) id = storeArtifact(r.a, r.e, bound.id);                  // upgrade in place
+    else if (bound) { bind = bound.id; toast('Вышло слабее — прежний артефакт остался в Арсенале'); } // stay bound: the next re-forge compares with it again
+    else if (r.e.tier >= KEEP_TIER) id = storeArtifact(r.a, r.e);
+    rt.cur = {...r, id, bind};
+    if (!S.stats.best || r.e.score > S.stats.best.score) S.stats.best = {...r.a, score: r.e.score, tier: r.e.tier, power: r.e.power};
+    announce(r.e, 0, id, 'loud');
+    stageReveal(rt.cur, 'reroll');
+    persist(); hud(); updateForgeControls();
+    if (id != null && r.e.tier >= KEEP_TIER) startTemper();
+  });
+  updateForgeControls();
+}
+
+function startOverdrive() {
+  rt.odUntil = performance.now() + OVERDRIVE.ms; rt.heat = 0;
+  S.stats.overdrives++; progress('overdrive', 1);
+  document.body.classList.add('od');
+  sfx.siren(); vibrate([80, 40, 80]);
+  toast('OVERDRIVE! 12 секунд: кредиты ×3, удача +2');
+  persist(); updateForgeControls();
+}
+
+/* ---------- Perfect Temper mini-game: Rare+ only, 1.4 s, hit the gold zone for +25% power ---------- */
+
+const TEMPER_MS = 1400;
+function startTemper() {
+  const el = $('#temper');
+  if (!el || !rt.cur || rt.cur.id == null || rt.cur.tempered) return;
+  const zone = {from: 0.38 + Math.random() * 0.34, width: 0.16};
+  rt.temper = {t0: performance.now(), zone};
+  rt.cur.canRetry = false;
+  el.hidden = false;
+  el.querySelector('.zone').style.cssText = `left:${zone.from * 100}%;width:${zone.width * 100}%`;
+  const b = $('#forgeBtn'); b.textContent = 'ЗАКАЛИТЬ!'; b.classList.add('temper-mode');
+  $('#temperTxt').textContent = S.tut === 2 ? 'Жми ЗАКАЛИТЬ, когда белая черта в золотой зоне: +25% мощи' : 'Жми в золотой зоне!';
+  updateForgeControls();                                              // re-forge buttons are off while tempering
+}
+const temperPos = () => Math.min(1, (performance.now() - rt.temper.t0) / TEMPER_MS);
+
+/** pos: marker position when pressed, or null when time ran out. quiet: the player left the forge. */
+function endTemper(pos, quiet = false) {
+  const tp = rt.temper, cur = rt.cur;
+  rt.temper = null;
+  const el = $('#temper'); if (el) el.hidden = true;
+  const b = $('#forgeBtn'); if (b) { b.textContent = 'КОВАТЬ'; b.classList.remove('temper-mode'); }
+  updateForgeControls();
+  if (!tp || !cur) return;
+  const ok = pos !== null && inZone(pos, tp.zone);
+  if (ok) {
+    const art = S.arsenal.find(x => x.id === cur.id);
+    if (art && !art.tempered) { art.tempered = true; art.power = Math.round(art.power * 1.25); }
+    cur.tempered = true; cur.canRetry = false;
+    S.stats.tempers++; S.stats.temperStreak++; S.stats.temperBest = Math.max(S.stats.temperBest, S.stats.temperStreak);
+    persist();
+  } else {
+    cur.canRetry = !cur.retried;                                       // one ad-funded retry per artifact
+    if (!quiet) S.stats.temperStreak = 0;
+  }
+  if (!quiet && S.tut === 2) { S.tut = 3; persist(); toast('Отряд готов! Испытай его на Арене'); $('[data-tab="arena"]')?.classList.add('tut-pulse'); }
+  if (quiet) return;
+  if (ok) { sfx.temperOk(); vibrate([30, 30, 60]); toast('★ Идеальная закалка! Мощь +25%'); } else sfx.temperFail();
+  rt.stage?.quench(ok); rt.stage?.setArtifact(artLook(cur));
+  announce(cur.e, null, cur.id, 'quiet');
+}
+
+/* ---------- arena ---------- */
+
+function renderArena() {
+  ensureBots();
+  if (rt.duel) return rt.duel.done ? renderResult() : renderDuel();
+  const sq = squad(S.arsenal), power = squadPower(S.arsenal), li = leagueOf(S.trophies), lg = LEAGUES[li], next = LEAGUES[li + 1];
+  $('#screen').innerHTML = `<section class="view arena">
+    <div class="card league">
+      <div class="row"><div class="grow"><div class="label">Лига</div><div class="league-name">${lg.n}</div></div>
+        <div class="big num">${icon('trophy')}${fmt(S.trophies)}</div></div>
+      ${next ? `<div class="prog"><i style="width:${(S.trophies - lg.min) / (next.min - lg.min) * 100}%"></i></div>
+                <div class="small">До лиги «${next.n}»: <span class="num">${fmt(next.min - S.trophies)}</span> кубков</div>` : '<div class="small">Высшая лига — держи позицию!</div>'}
+      ${S.streak > 1 ? `<div class="streak">Серия побед: <b class="num">${S.streak}</b></div>` : ''}
+    </div>
+    <h2>Боевой отряд <span class="num accent">${fmt(power)}</span></h2>
+    <div class="squad">${[0, 1, 2].map(i => sq[i] ? artCard(sq[i]) : '<div class="art empty">Пустой слот<small>Выкуй «Редкий» или выше</small></div>').join('')}</div>
+    <p class="small">Сила тапа в бою: <b class="num">${tapPower(S.up.strike)}</b> · соперники твоего рейтинга: ~<span class="num">${fmt(ARENA.oppBase + ARENA.oppPerTrophy * S.trophies)}</span> мощи</p>
+    <button class="forgebtn fight" data-act="duel">${icon('swords')}В БОЙ · 10 сек</button>
+    <h2>Сезон ${S.season} · ${lg.n}</h2>
+    <ol class="board">${leaderboard(S.bots, S.trophies).map(r =>
+      `<li class="${r.me ? 'me' : ''}"><span class="num">${r.rank}</span><span class="grow">${r.name}</span><b class="num">${fmt(r.t)}</b></li>`).join('')}</ol>
+    ${ONLINE ? `<h2>Глобальный топ-50</h2>
+      <div class="card"><label class="small" for="nickInput">Твой ник в рейтинге</label>
+        <div class="row nick-row"><input id="nickInput" class="nick-input" maxlength="24" autocomplete="nickname" spellcheck="false"><button class="btn" data-act="rename">Сохранить</button></div></div>
+      <ol class="board" id="globalTop"><li class="small">Загрузка…</li></ol>` : ''}
+  </section>`;
+  if (!ONLINE) return;
+  $('#nickInput').value = nickname();
+  fetchOpponent(S.trophies).then(r => { rt.nextOpp = r?.opponent ? {p: r.opponent, at: Date.now()} : null; });   // the next duel meets a real player
+  fetchTop().then(r => {
+    const list = $('#globalTop');
+    if (!list) return;
+    list.innerHTML = '';
+    const rows = r?.top ?? [];
+    if (!rows.length) { list.innerHTML = `<li class="small">${r ? 'Пока пусто — стань первым!' : 'Нет связи с сервером: играем с ботами'}</li>`; return; }
+    for (const row of rows) {                                           // names come from other players: text only
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="num"></span><span class="grow"></span><b class="num"></b>';
+      li.children[0].textContent = row.rank; li.children[1].textContent = row.name; li.children[2].textContent = fmt(row.trophies);
+      list.append(li);
+    }
+  });
+}
+
+function startDuel() {
+  if (rt.spin) rt.spin.finish();
+  ensureBots();
+  const real = rt.nextOpp && Date.now() - rt.nextOpp.at < 120000 ? rt.nextOpp.p : null;   // a real player from /api/arena, else a bot
+  rt.nextOpp = null;
+  rt.duel = {opp: real ? opponentFromPlayer(real) : makeOpponent(S.trophies, S.bots), player: squadPower(S.arsenal), t0: performance.now(), done: false, result: null, doubled: false,
+             mine: squad(S.arsenal)[0] ?? forge(S.loc), theirs: real?.squad?.[0] ?? forge(S.loc)};
+  renderDuel();
+}
+
+function renderDuel() {
+  const d = rt.duel;
+  $('#screen').innerHTML = `<section class="view duel">
+    <div class="duel-timer num" id="dTimer">10.0</div>
+    <div class="fighter me"><div class="f-head"><span>Ты</span><b class="num" id="dMe">0</b></div><div class="bar"><i id="barMe"></i></div></div>
+    <canvas id="duelScene" class="duel-scene" aria-hidden="true"></canvas>
+    <div class="fighter opp"><div class="f-head"><span id="oppName"></span><b class="num" id="dOpp">0</b></div><div class="bar"><i id="barOpp"></i></div></div>
+    <button class="forgebtn fight" id="duelBtn">КОВАТЬ В БОЮ!</button>
+    <p class="small center">Отряд дал стартовую мощь. Тапай как можно быстрее!</p>
+  </section>`;
+  $('#duelBtn').addEventListener('pointerdown', e => { e.preventDefault(); duelTap(); });
+  rt.duelStage?.stop();
+  $('#oppName').textContent = d.opp.real ? `${d.opp.name} · игрок` : d.opp.name;   // another player's nickname: text only
+  rt.duelStage = createDuelStage($('#duelScene'), d.mine, d.theirs);
+  rt.duelStage.start();
+}
+
+function duelFrame(now) {
+  const d = rt.duel, p = Math.min(1, (now - d.t0) / ARENA.duelMs), opp = opponentAt(d.opp, p);
+  const bar = $('#barMe');
+  if (bar) {
+    const scale = Math.max(d.opp.total * 1.15, d.player, opp);
+    bar.style.width = `${d.player / scale * 100}%`;
+    $('#barOpp').style.width = `${opp / scale * 100}%`;
+    $('#dMe').textContent = fmt(d.player); $('#dOpp').textContent = fmt(opp);
+    $('#dTimer').textContent = ((1 - p) * ARENA.duelMs / 1000).toFixed(1);
+    $('.fighter.me').classList.toggle('lead', d.player >= opp);
+    rt.duelStage?.setRatio(d.player / (d.player + opp || 1));
+  }
+  if (p >= 1) finishDuel();
+}
+
+function duelTap() {
+  const d = rt.duel;
+  if (!d || d.done) return;
+  d.player += tapPower(S.up.strike);
+  sfx.hit(); vibrate(6); rt.duelStage?.hit();
+  const b = $('#duelBtn'); b?.classList.remove('punch'); void b?.offsetWidth; b?.classList.add('punch');
+}
+
+function finishDuel() {
+  const d = rt.duel;
+  d.done = true;
+  rt.duelStage?.stop(); rt.duelStage = null;
+  const out = d.result = duelOutcome(d.player, d.opp, {trophies: S.trophies, streak: S.streak, locMult: curLoc().mult});
+  out.credits = Math.round(out.credits * (1 + bonuses(S).arena));     // Arena bonus from achievements
+  S.trophies = Math.max(0, S.trophies + out.dTrophies); S.streak = out.streak;
+  S.stats.maxStreak = Math.max(S.stats.maxStreak ?? 0, S.streak);
+  S.stats.duels++; out.win ? S.stats.wins++ : S.stats.losses++;
+  if (out.win) progress('wins', 1);
+  addCredits(out.credits);
+  S.bots = tickBots(S.bots);
+  persist(); hud(); renderResult();
+  if (out.win) { sfx.victory(); burst($('.res-title'), 160, ['#ffcc33', '#00f0ff', '#ffffff']); vibrate([50, 30, 50, 30, 120]); }
+  else { sfx.defeat(); vibrate(200); }
+}
+
+function renderResult() {
+  const d = rt.duel, o = d.result;
+  $('#screen').innerHTML = `<section class="view duel result ${o.win ? 'win' : 'lose'}">
+    <div class="res-title">${o.win ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ'}</div>
+    <div class="res-score num">${fmt(d.player)} : ${fmt(d.opp.total)}</div>
+    <div class="res-rows card">
+      <div class="row"><span class="grow">Кубки</span><b class="num">${o.dTrophies >= 0 ? '+' : ''}${o.dTrophies}</b></div>
+      <div class="row"><span class="grow">Кредиты</span><b class="num">+${fmt(o.credits)}</b></div>
+      ${o.win && S.streak > 1 ? `<div class="row"><span class="grow">Серия побед</span><b class="num">${S.streak}</b></div>` : ''}
+    </div>
+    ${o.win && !d.doubled ? `<button class="btn ad wide" data-act="double">${icon('play')}×2 кредиты и +${ARENA.adBonusTrophies} кубков</button>` : ''}
+    ${d.doubled ? '<p class="small center">Награда удвоена ✓</p>' : ''}
+    ${!o.win ? '<p class="small center">Совет: закрой замком сильный индекс и перекуй остальное — отряд станет мощнее.</p>' : ''}
+    <button class="forgebtn" data-act="duelDone">ПРОДОЛЖИТЬ</button>
+  </section>`;
+}
+
+async function doubleReward() {
+  const d = rt.duel;
+  if (!d?.result?.win || d.doubled) return;
+  if (await showRewarded(PLACEMENTS.DOUBLE)) {
+    d.doubled = true; addCredits(d.result.credits); S.trophies += ARENA.adBonusTrophies;
+    sfx.coin(); toast('Награда удвоена!'); persist(); hud();
+  }
+  if (rt.duel === d) renderResult();
+}
+
+/** Interstitial goes here and only here: after every 3rd finished duel, never during forging. */
+async function duelDone(nextTab = 'arena') {
+  if (!rt.duel?.done) return;
+  rt.duel = null;
+  if (S.stats.duels % ARENA.interstitialEvery === 0) await showInterstitial(PLACEMENTS.INTERSTITIAL);
+  show(nextTab);
+}
+
+/* ---------- arsenal ---------- */
+
+const arsNav = () => `<div class="subtabs" role="group" aria-label="Раздел">${[['stock', 'Склад'], ['dex', 'Витрина']].map(([id, n]) =>
+  `<button class="chip ${rt.arsTab === id ? 'on' : ''}" data-act="arsTab" data-id="${id}" aria-pressed="${rt.arsTab === id}">${n}</button>`).join('')}</div>`;
+
+function renderArsenal() {
+  if (rt.arsTab === 'dex') { $('#screen').innerHTML = `<section class="view">${arsNav()}${showcaseHtml(S)}</section>`; return; }
+  const inSquad = new Set(squad(S.arsenal).map(a => a.id)), list = [...S.arsenal].sort((a, b) => b.power - a.power);
+  $('#screen').innerHTML = `<section class="view">
+    ${arsNav()}
+    <h2>Арсенал <span class="num">${S.arsenal.length}/${ARSENAL_MAX}</span></h2>
+    <p class="small">Топ-3 по мощи сами встают в боевой отряд. Продажа: мощь × 2 кредитов.</p>
+    <button class="btn ghost wide" data-act="sellRare">Продать все «Редкие» вне отряда</button>
+    <div class="arsenal">${list.length ? list.map(a => `<div class="arsrow">${artCard(a)}
+        <div class="ars-actions">${inSquad.has(a.id) ? '<span class="badge">В ОТРЯДЕ</span>' : ''}
+          <button class="btn small" data-act="sell" data-id="${a.id}">Продать <span class="num">${fmt(sellPrice(a))}</span></button></div></div>`).join('')
+      : '<div class="card small">Пусто. Артефакты «Редкий» и выше попадают сюда сами.</div>'}</div>
+  </section>`;
+}
+
+/* ---------- shop ---------- */
+
+function smugglerLeft() { return Math.max(0, S.smugglerAt + CONTAINERS[0].cooldownMs - Date.now()); }
+const mmss = ms => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+
+function renderShop() {
+  const pips = (id, max) => `<div class="pips">${Array.from({length: max}, (_, i) => `<i class="${i < S.up[id] ? 'on' : ''}"></i>`).join('')}</div>`;
+  $('#screen').innerHTML = `<section class="view">
+    <h2>Апгрейды</h2>
+    ${Object.entries(UPGRADES).map(([id, u]) => {
+      const max = S.up[id] >= u.max, c = upgradeCost(u, S.up[id]);
+      return `<div class="card row"><div class="grow"><b>${u.n}</b><div class="small">${u.d}</div>${pips(id, u.max)}</div>
+        <button class="btn" data-act="up" data-id="${id}" ${max || S.credits < c ? 'disabled' : ''}>${max ? 'МАКС' : `<span class="num">${fmt(c)}</span>`}</button></div>`;
+    }).join('')}
+    <h2>Контейнеры</h2>
+    ${CONTAINERS.map(c => {
+      const left = c.ad ? smugglerLeft() : 0;
+      return `<div class="card row"><div class="grow"><b>${c.n}</b><div class="small">${c.d}. Артефакт сразу в Арсенал.</div></div>
+        ${c.ad ? `<button class="btn ad" id="smugBtn" data-act="container" data-id="${c.id}" ${left ? 'disabled' : ''}>${left ? `<span class="num">${mmss(left)}</span>` : `${icon('play')}Открыть`}</button>`
+               : S.boxes[c.id] > 0 ? `<button class="btn" data-act="container" data-id="${c.id}">Бесплатно <span class="num">×${S.boxes[c.id]}</span></button>`
+               : `<button class="btn" data-act="container" data-id="${c.id}" ${S.credits < c.cost ? 'disabled' : ''}><span class="num">${fmt(c.cost)}</span></button>`}</div>`;
+    }).join('')}
+    <h2>Локации</h2>
+    ${LOCATIONS.map(l => `<div class="card row" style="--h:${l.hue}"><div class="grow"><b class="loc-name">${l.name}</b><div class="small">Кредиты и мощь ×${l.mult}</div></div>
+      ${S.unlocked.includes(l.id) ? '<span class="small">Открыто ✓</span>'
+        : `<button class="btn" data-act="unlock" data-id="${l.id}" ${S.credits < l.cost ? 'disabled' : ''}><span class="num">${fmt(l.cost)}</span></button>`}</div>`).join('')}
+  </section>`;
+}
+
+async function openContainer(id) {
+  const c = CONTAINERS.find(x => x.id === id);
+  if (!c || rt.spin || rt.duel) return;
+  if (c.ad) {
+    if (smugglerLeft()) return;
+    if (!(await showRewarded(PLACEMENTS.CONTAINER))) return;
+    S.smugglerAt = Date.now();
+  } else if (S.boxes[c.id] > 0) S.boxes[c.id]--;                  // a free container won from an achievement
+  else {
+    if (S.credits < c.cost) { toast('Не хватает кредитов'); return; }
+    S.credits -= c.cost;
+  }
+  persist(); hud(); show('forge'); forgeTap(c);
+}
+
+/* ---------- quests ---------- */
+
+function renderQuests() {
+  const st = S.stats, n = readyToClaim(S).length;
+  const nav = `<div class="subtabs" role="group" aria-label="Раздел">${[['contracts', 'Контракты', ''], ['ach', 'Достижения', n ? `<span class="count num">${n}</span>` : '']].map(([id, t, extra]) =>
+    `<button class="chip ${rt.qTab === id ? 'on' : ''}" data-act="qTab" data-id="${id}" aria-pressed="${rt.qTab === id}">${t}${extra}</button>`).join('')}</div>`;
+  if (rt.qTab === 'ach') { $('#screen').innerHTML = `<section class="view">${nav}${achHtml()}</section>`; return; }
+  $('#screen').innerHTML = `<section class="view">
+    ${nav}
+    <h2>Контракты</h2>
+    ${S.contracts.map((c, i) => {
+      const t = CONTRACTS.find(x => x.k === c.k), done = c.p >= c.n;
+      return `<div class="card"><div class="row"><div class="grow"><b>${t.t(c.n)}</b>
+        <div class="small num">${fmt(c.p)} / ${fmt(c.n)} · награда ${fmt(c.reward)}</div></div>
+        <button class="btn" data-act="claim" data-id="${i}" ${done ? '' : 'disabled'}>Забрать</button></div>
+        <div class="prog"><i style="width:${Math.min(100, c.p / c.n * 100)}%"></i></div></div>`;
+    }).join('')}
+    <h2>Статистика</h2>
+    <div class="card stats num">
+      <span>Ковок</span><b>${fmt(st.forges)}</b><span>Перековок</span><b>${fmt(st.rerolls)}</b>
+      <span>OVERDRIVE</span><b>${fmt(st.overdrives)}</b><span>Дуэлей / побед</span><b>${fmt(st.duels)} / ${fmt(st.wins)}</b>
+      <span>Лучшее комбо</span><b>×${comboMult(st.maxCombo, COMBO).toFixed(2)}</b><span>Заработано</span><b>${fmt(st.credits)}</b>
+      <span>Гиро-спинов</span><b>${fmt(S.gyro.spins)}</b><span>Гиро: ставки / возврат</span><b>${fmt(S.gyro.wagered)} / ${fmt(S.gyro.returned)}</b>
+    </div>
+    ${st.best ? `<h2>Лучший артефакт</h2>${artCard(st.best)}` : ''}
+    <div class="card tiers">${TIERS.map((t, i) => `<span style="color:${t.c}">${t.n}</span><b class="num">${fmt(st.tiers[i])}</b>`).join('')}</div>
+    ${CLOUD ? `<h2>Аккаунт</h2><div class="card row"><div class="grow">${currentUser()
+        ? `<b class="acc-name"></b><div class="small">Прогресс сохраняется на сервере</div>`
+        : '<b>Без входа</b><div class="small">Прогресс хранится только на этом устройстве</div>'}</div>
+      ${currentUser() ? '<button class="btn ghost" data-act="logout">Выйти</button>' : '<button class="btn" data-act="auth">Войти</button>'}</div>` : ''}
+    <button class="btn ghost wide" data-act="reset">Сбросить прогресс</button>
+  </section>`;
+  const acc = $('.acc-name');
+  if (acc) acc.textContent = currentUser();                          // text, never HTML
+}
+
+/* ---------- actions ---------- */
+
+const ACTIONS = {
+  tab: id => show(id),
+  loc: id => { S.loc = id; rt.cur = null; rt.locks = {}; persist(); renderForge(); },
+  lock: id => toggleLock(id),
+  reroll: () => reroll(false),
+  rerollAd: async () => { if (rt.cur && lockCount() && !rt.spin && !rt.temper && await showRewarded(PLACEMENTS.REROLL)) reroll(true); },
+  odAd: async () => { if (!isOD() && await showRewarded(PLACEMENTS.OVERDRIVE)) startOverdrive(); },
+  temperAd: async () => {
+    const cur = rt.cur;
+    if (!cur?.canRetry || rt.temper || rt.spin) return;
+    if (await showRewarded(PLACEMENTS.TEMPER) && rt.cur === cur) {
+      cur.retried = true; cur.canRetry = false;
+      announce(cur.e, null, cur.id, 'quiet'); startTemper();
+    }
+  },
+  gyroOpen: () => { const d = $('#gyroDrawer'); if (!d) return; d.hidden = false; rt.wheel?.resize(); renderGyro(); d.querySelector('[data-act="gyroClose"]')?.focus(); },
+  gyroClose: () => { const d = $('#gyroDrawer'); if (d) d.hidden = true; $('#gyroOpen')?.focus(); },
+  gyroBet: id => { if (S.gyro.charge || rt.wheel?.spinning) return; rt.gyroShare = +id; sfx.lock(); renderGyro(); },
+  gyroSpin: () => gyroSpin(betFor(S.credits, rt.gyroShare, curLoc().mult)),
+  gyroAd: () => gyroAd(),
+  arsTab: id => { rt.arsTab = id; renderArsenal(); scrollTo(0, 0); },
+  openDex: () => { rt.arsTab = 'dex'; show('arsenal'); },
+  duel: () => startDuel(),
+  rename: async () => {
+    const r = await renameOnline($('#nickInput')?.value ?? '');
+    toast(r?.ok ? `Ник сохранён: ${r.name}` : r?.error ?? 'Нет связи с сервером');
+    if (r?.ok && rt.tab === 'arena') renderArena();
+  },
+  double: () => doubleReward(),
+  duelDone: () => duelDone('arena'),
+  up: id => {
+    const u = UPGRADES[id], c = upgradeCost(u, S.up[id]);
+    if (S.up[id] >= u.max || S.credits < c) return;
+    S.credits -= c; S.up[id]++; sfx.coin(); toast(`${u.n}: уровень ${S.up[id]}`);
+    if (id === 'auto') setAuto();
+    persist(); hud(); rt.tab === 'shop' ? renderShop() : renderSides();   // also bought from the side panel of the forge
+  },
+  unlock: id => {
+    const l = LOCATIONS.find(x => x.id === id);
+    if (S.unlocked.includes(id) || S.credits < l.cost) return;
+    S.credits -= l.cost; S.unlocked.push(id); S.loc = id; rt.cur = null;
+    sfx.fanfare(4); toast(`Открыта локация: ${l.name}`); persist(); hud(); show('forge');
+  },
+  container: id => openContainer(id),
+  sell: id => {
+    const a = S.arsenal.find(x => x.id === +id);
+    if (!a) return;
+    S.arsenal = S.arsenal.filter(x => x !== a); addCredits(sellPrice(a));
+    if (rt.cur?.id === a.id) rt.cur.id = null;
+    sfx.coin(); persist(); hud(); renderArsenal();
+  },
+  sellRare: () => {
+    const keep = new Set(squad(S.arsenal).map(a => a.id)), out = S.arsenal.filter(a => a.tier === KEEP_TIER && !keep.has(a.id));
+    if (!out.length) return toast('Нечего продавать');
+    const sum = out.reduce((t, a) => t + sellPrice(a), 0);
+    S.arsenal = S.arsenal.filter(a => !out.includes(a)); addCredits(sum);
+    if (out.some(a => a.id === rt.cur?.id)) rt.cur.id = null;
+    toast(`Продано ${out.length} шт. · +${fmt(sum)}`); sfx.coin(); persist(); hud(); renderArsenal();
+  },
+  qTab: id => { rt.qTab = id; renderQuests(); scrollTo(0, 0); },
+  openAch: () => { rt.qTab = 'ach'; show('quests'); },
+  claimAch: id => {
+    const r = claimAch(S, id);
+    if (!r) return;
+    if (r.credits) addCredits(r.credits);
+    if (r.box) S.boxes[r.box]++;
+    const what = r.credits ? `+${fmt(r.credits)} кредитов` : r.box ? `контейнер «${CONTAINERS.find(c => c.id === r.box).n}» в Магазине`
+      : r.craft ? `+${Math.round(r.craft * 100)}% к мощи крафта навсегда` : `+${Math.round(r.arena * 100)}% к наградам Арены навсегда`;
+    sfx.fanfare(4); toast(`Награда: ${what}`);
+    persist(); hud(); renderQuests();
+  },
+  claim: i => {
+    const c = S.contracts[+i];
+    if (!c || c.p < c.n) return;
+    addCredits(c.reward); sfx.fanfare(3); toast(`Контракт выполнен: +${fmt(c.reward)}`);
+    S.contracts.splice(+i, 1); fillContracts(); persist(); hud(); renderQuests();
+  },
+  auth: () => openAuth(() => { toast(`Вход выполнен: ${currentUser()}`); if (rt.tab === 'quests') renderQuests(); }),
+  logout: () => { if (confirm('Выйти из аккаунта? Прогресс останется на сервере, а с этого устройства сотрётся.')) doLogout(); },
+  reset: () => {
+    if (!confirm('Стереть весь прогресс? Это нельзя отменить.')) return;
+    S = fresh(); fillContracts(); ensureBots(); rt.cur = null; rt.locks = {}; rt.heat = 0; rt.odUntil = 0;
+    setAuto(); persist(); hud(); show('forge');
+  },
+};
+
+function setAuto() {
+  clearInterval(rt.auto);
+  if (!S.up.auto) return;
+  rt.auto = setInterval(() => {
+    const idle = performance.now() - rt.lastManual > 1200;
+    if (rt.tab === 'forge' && idle && !rt.spin && !rt.temper && !rt.duel && !document.hidden && !$('.ad-modal')) forgeTap('auto');
+  }, Math.max(1500, 4500 - 400 * S.up.auto));
+}
+
+/* ---------- frame loop: meters, overdrive timer, duel ---------- */
+
+function frame(now) {
+  const dt = (now - rt.lastFrame) / 1000;
+  rt.lastFrame = now;
+  const left = Math.max(0, 1 - (now - rt.lastTap) / COMBO.window);
+  if (!left && rt.streak) rt.streak = 0;
+  const od = isOD();
+  if (!od && now - rt.lastTap > COMBO.window) rt.heat = Math.max(0, rt.heat - HEAT.decayPerSec * dt);
+  const cf = $('#comboFill');
+  if (cf) {
+    cf.style.width = `${rt.streak ? left * 100 : 0}%`;
+    $('#comboTxt').textContent = `КОМБО ×${comboMult(rt.streak, COMBO).toFixed(2)}`;
+    $('#heatFill').style.width = `${od ? (rt.odUntil - now) / OVERDRIVE.ms * 100 : rt.heat}%`;
+    $('#heatTxt').textContent = od ? `OVERDRIVE ${((rt.odUntil - now) / 1000).toFixed(1)} с` : `РЕАКТОР ${Math.floor(rt.heat)}%`;
+  }
+  if (!od && document.body.classList.contains('od')) { document.body.classList.remove('od'); updateForgeControls(); }
+  rt.stage?.setScene({combo: Math.min(rt.streak, COMBO.maxStreak) / COMBO.maxStreak, od});
+  if (rt.temper) {
+    const p = temperPos(), m = $('#temper .marker');
+    if (m) m.style.left = `${p * 100}%`;
+    if (p >= 1) endTemper(null);
+  }
+  if (rt.duel && !rt.duel.done) duelFrame(now);
+  requestAnimationFrame(frame);
+}
+
+/* ---------- boot ---------- */
+
+export function start() {
+  S = load();
+  if (!S.dexFilled) { backfill(S); persist(); }   // saves from before the catalog: fill it from the Arsenal once
+  fillContracts(); ensureBots(); setMuted(S.muted);
+  shell(); initParticles($('#fx')); hud(); show('forge'); setAuto();
+  document.addEventListener('click', e => {
+    const t = e.target.closest('[data-act], [data-tab]');
+    if (!t || t.disabled) return;
+    if (t.dataset.tab) show(t.dataset.tab); else ACTIONS[t.dataset.act]?.(t.dataset.id);
+  });
+  $('#mute').addEventListener('click', () => { S.muted = !S.muted; setMuted(S.muted); persist(); hud(); });
+  document.addEventListener('keydown', e => {
+    if (e.code !== 'Space' || $('.ad-modal') || $('.auth-modal')) return;   // typing a password must not forge
+    if (!(e.target === document.body || e.target.id === 'forgeBtn' || e.target.id === 'duelBtn')) return;
+    e.preventDefault();
+    if (rt.duel && !rt.duel.done) duelTap(); else if (rt.tab === 'forge' && !rt.temper) forgeTap('tap');   // Space never hits the temper bar by accident
+  });
+  setInterval(() => {
+    const b = $('#smugBtn');
+    if (!b || rt.tab !== 'shop') return;
+    const l = smugglerLeft();
+    if (!l && b.disabled) renderShop(); else if (l) b.innerHTML = `<span class="num">${mmss(l)}</span>`;
+  }, 1000);
+  requestAnimationFrame(frame);
+  addEventListener('resize', () => { rt.stage?.resize(); rt.duelStage?.resize(); rt.wheel?.resize(); });
+  onAdPause(on => setPaused(on || document.hidden));
+  document.addEventListener('visibilitychange', () => { setPaused(document.hidden); if (document.hidden) cloudFlush(true); });
+  addEventListener('pagehide', () => cloudFlush(true));             // closing the tab: the last progress still reaches the server
+  onCloudNotice(toast);
+  initPlatform().then(p => { rt.platform = p; });   // Yandex: LoadingAPI.ready() once the forge is on screen
+  window.__cf = {state: () => S, rt, adLog, setTestDuration, force: a => { rt.forceNext = {a, e: evaluate(a)}; },
+                forceGyro: i => { rt.forceGyro = i; }};   // test hooks for Playwright
+}

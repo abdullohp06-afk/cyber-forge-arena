@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Feature graphic</title>
+<style>html, body { margin: 0; background: #060913; } canvas { display: block; }</style>
+</head>
+<body>
+<!-- Google Play feature graphic, 1024×500. Rendered by the same weapon generator as the game; open via `npm run dev` → /store/feature.html -->
+<canvas id="c" width="1024" height="500"></canvas>
+<script type="module">
+import '@fontsource/jetbrains-mono/800.css';
+import {drawWeapon} from '/src/ui/weaponArt.js';
+
+await document.fonts.load('800 60px "JetBrains Mono"', 'КИБЕРКУЗНЯАРЕНАКуйоружиеЛовиПобеждай777');   // pull the Cyrillic subset too
+const c = document.getElementById('c'), x = c.getContext('2d');
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;   // same picture every render
+
+const bg = x.createLinearGradient(0, 0, 1024, 500);
+bg.addColorStop(0, '#0d1a3c'); bg.addColorStop(1, '#060913');
+x.fillStyle = bg; x.fillRect(0, 0, 1024, 500);
+x.strokeStyle = '#00f0ff1c'; x.lineWidth = 1;                                          // neon floor grid
+for (let y = 300; y < 500; y += 16) { x.beginPath(); x.moveTo(0, y); x.lineTo(1024, y); x.stroke(); }
+for (let i = -12; i <= 12; i++) { x.beginPath(); x.moveTo(760 + i * 14, 300); x.lineTo(760 + i * 120, 500); x.stroke(); }
+for (const [cx, cy, r, col] of [[760, 245, 260, '#00f0ff30'], [930, 110, 200, '#ff336628'], [180, 420, 220, '#b06bff22']]) {
+  const g = x.createRadialGradient(cx, cy, 0, cx, cy, r); g.addColorStop(0, col); g.addColorStop(1, '#00000000');
+  x.fillStyle = g; x.fillRect(0, 0, 1024, 500);
+}
+
+const art = (el, wp, r, pk = r) => ({el: {n: el, r}, wp: {n: wp, r}, pk: {n: 'Перк', r: pk}});
+x.save(); x.translate(760, 245); x.rotate(-0.5); drawWeapon(x, art('Неон', 'Катана', 4), 0, 0, 400, {t: 0.4}); x.restore();
+x.save(); x.translate(760, 245); x.rotate(0.5); drawWeapon(x, art('Пустота', 'Коса', 4, 5), 0, 0, 380, {t: 0.4, flip: true}); x.restore();
+
+x.globalCompositeOperation = 'lighter';                                                // sparks at the clash
+const flash = x.createRadialGradient(760, 245, 0, 760, 245, 70);
+flash.addColorStop(0, 'rgba(255,255,255,.95)'); flash.addColorStop(1, 'rgba(255,255,255,0)');
+x.fillStyle = flash; x.fillRect(680, 165, 160, 160);
+x.lineCap = 'round';
+for (let i = 0; i < 70; i++) {
+  const a = rnd() * Math.PI * 2, d = 20 + rnd() * 150, len = 8 + rnd() * 18;
+  const sx = 760 + Math.cos(a) * d, sy = 245 + Math.sin(a) * d * 0.8;
+  x.strokeStyle = ['#ffcc33', '#00f0ff', '#ffffff', '#ff3366'][i % 4]; x.lineWidth = 2; x.globalAlpha = 1 - d / 190;
+  x.beginPath(); x.moveTo(sx, sy); x.lineTo(sx + Math.cos(a) * len, sy + Math.sin(a) * len); x.stroke();
+}
+x.globalAlpha = 1; x.globalCompositeOperation = 'source-over';
+
+const title = (text, y, size, color) => {
+  x.font = `800 ${size}px "JetBrains Mono"`; x.fillStyle = color; x.shadowColor = color; x.shadowBlur = 24;
+  x.fillText(text, 64, y); x.shadowBlur = 0;
+};
+title('КИБЕР', 170, 78, '#00f0ff');
+title('КУЗНЯ', 252, 78, '#ff3366');
+x.font = '800 40px "JetBrains Mono"'; x.fillStyle = '#ffcc33'; x.shadowColor = '#ffcc33'; x.shadowBlur = 16;
+x.fillText('А Р Е Н А', 68, 312); x.shadowBlur = 0;
+x.font = '800 22px "JetBrains Mono"'; x.fillStyle = '#c9d6ea';
+x.fillText('Куй оружие · Лови 777 · Побеждай', 66, 372);
+document.body.dataset.ready = '1';
+</script>
+</body>
+</html>

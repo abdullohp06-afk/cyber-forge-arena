@@ -1,0 +1,13 @@
+node_modules/
+dist/
+qa/
+dist-server/
+pack/
+data/
+cyberforge-server.zip
+dist-yandex/
+dist-single/
+*.zip
+android/.gradle/
+android/**/build/
+.vercel/
