@@ -17,9 +17,14 @@ export function rotationFor(phi, from, turns) {
   return from + turns * TAU + ((want - cur + TAU) % TAU);
 }
 
+const JACKPOT = GYRO.wheel.findIndex(x => x.s === GYRO.sectors.length - 1);
+/** Segment right next to the top prize: the wheel stops at its very edge, the result itself is unchanged. */
+export const nearJackpot = i => i === (JACKPOT + 1) % GYRO.wheel.length || i === (JACKPOT - 1 + GYRO.wheel.length) % GYRO.wheel.length;
+const OVERSHOOT = 0.09;                  // rad the wheel rolls past the stop before it settles back
+
 export function createGyroWheel(canvas, {onTick = () => {}} = {}) {
   const cx = canvas.getContext('2d'), arcs = segmentArcs();
-  let rot = 0, hi = -1, raf = 0, anim = null, size = 0;
+  let rot = 0, hi = -1, raf = 0, anim = null, size = 0, kick = 0, idle = 0;
 
   const under = () => {                                   // segment under the pointer for the current rotation
     const phi = ((-rot % TAU) + TAU) % TAU;
@@ -57,23 +62,36 @@ export function createGyroWheel(canvas, {onTick = () => {}} = {}) {
     cx.fillStyle = '#00f0ff'; cx.font = `900 ${Math.round(R * 0.26)}px Orbitron, monospace`; cx.textAlign = 'center'; cx.textBaseline = 'middle';
     cx.fillText(hi >= 0 ? `×${GYRO.sectors[GYRO.wheel[hi].s].m}` : 'G', 0, 1);
     cx.restore();
-    cx.beginPath(); cx.moveTo(c - 7, 1); cx.lineTo(c + 7, 1); cx.lineTo(c, 15); cx.closePath();   // pointer
+    const lamps = 20, big = hi >= 0 && GYRO.sectors[GYRO.wheel[hi].s].m >= 3;   // rim lamps: chase while spinning, flash on a big win
+    for (let i = 0; i < lamps; i++) {
+      const a = i / lamps * TAU, on = anim ? (i + Math.floor(rot * 3)) % 4 === 0 : big ? (idle + i) % 2 === 0 : (i + idle) % 5 === 0;
+      cx.beginPath(); cx.arc(c + Math.cos(a) * (R + 4), c + 3 + Math.sin(a) * (R + 4), 1.8, 0, TAU);
+      cx.fillStyle = on ? (big ? '#ffcc33' : '#ffffff') : '#2a3654'; cx.fill();
+    }
+    cx.save(); cx.translate(c, 1); cx.rotate(-kick * 0.6);                    // pointer flicks back on every peg
+    cx.beginPath(); cx.moveTo(-7, 0); cx.lineTo(7, 0); cx.lineTo(0, 14); cx.closePath();
     cx.fillStyle = '#ffcc33'; cx.shadowColor = '#ffcc33'; cx.shadowBlur = 10; cx.fill(); cx.shadowBlur = 0;
+    cx.restore();
   }
 
   function step(now) {
     const p = Math.min(1, (now - anim.t0) / anim.ms), last = under();
-    rot = anim.from + (anim.to - anim.from) * easeOut(p);
-    if (under() !== last) onTick();
+    const roll = easeOut(Math.min(1, p / 0.88)), settle = p > 0.88 ? (1 - Math.cos((p - 0.88) / 0.12 * Math.PI)) / 2 : 0;
+    rot = anim.from + (anim.to + OVERSHOOT - anim.from) * roll - OVERSHOOT * settle;   // roll a little past, then creep back
+    kick *= 0.8;
+    if (under() !== last) { onTick(); kick = 1; }
     draw();
     if (p < 1) raf = requestAnimationFrame(step); else finish();
   }
+  const blink = setInterval(() => { if (!canvas.isConnected) return clearInterval(blink); if (!anim) { idle++; draw(); } }, 450);
 
   /** Spin so that segment `i` lands under the pointer; ms = 0 lands at once (reduced motion). */
   function spinTo(i, ms, done) {
     finish();
     hi = -1;
-    const a = arcs[i], phi = a.from + (a.to - a.from) * (0.2 + Math.random() * 0.6);
+    // Next to the jackpot the stop hugs the shared edge, so the overshoot shows ×5 for a moment before settling back.
+    const at = i === (JACKPOT + 1) % arcs.length ? 0.05 : i === (JACKPOT - 1 + arcs.length) % arcs.length ? 0.97 : 0.2 + Math.random() * 0.6;
+    const a = arcs[i], phi = a.from + (a.to - a.from) * at;
     anim = {t0: performance.now(), ms, from: rot, to: rotationFor(phi, rot, ms ? 5 : 0), done, i};
     if (!ms) return finish();
     raf = requestAnimationFrame(step);

@@ -1,7 +1,7 @@
 // The forge scene above the slots: hammer strikes, sparks that bounce off the anvil, hit-stop, rarity effects
 // and 5 evolution levels driven by the total upgrade level. One canvas, one requestAnimationFrame loop.
 import {drawWeapon} from './weaponArt.js';
-import {fxOf, drawBackdrop, drawAnvilFor, drawStriker, impactExtra, drawOverlay} from './locationArt.js';
+import {fxOf, drawBackdrop, drawAnvilFor, drawStriker, impactExtra, drawOverlay, photoLayout, drawPhotoScene} from './locationArt.js';
 
 export const STAGE_LEVELS = [0, 5, 12, 21, 32];          // total upgrade levels where the forge evolves
 export const stageLevel = sum => STAGE_LEVELS.reduce((lvl, min, i) => (sum >= min ? i + 1 : lvl), 1);
@@ -13,7 +13,7 @@ export const IMPACT_DELAY = STRIKE_MS * IMPACT_AT;      // ms from strike start 
 export function createForgeStage(canvas, {onImpact} = {}) {
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const ctx = canvas.getContext('2d');
-  let W = 0, H = 0, raf = 0, running = false, last = 0, clock = 0, dpr = 1;
+  let W = 0, H = 0, raf = 0, running = false, last = 0, clock = 0, dpr = 1, ro = null;
   const s = {level: 1, hue: '#00f0ff', loc: 'neo', combo: 0, od: false, auto: 0, art: null, heat: 0, shake: 0, freezeUntil: 0,
              strikes: [], sparks: [], waves: [], pillar: null, cocoon: null, ring: 0, impacts: 0, fx: {}, flash: 0, glitch: 0};
   const count = k => { s.fx[k] = (s.fx[k] || 0) + 1; };
@@ -25,6 +25,8 @@ export function createForgeStage(canvas, {onImpact} = {}) {
     ctx.setTransform(d, 0, 0, d, 0, 0);
   }
   const geo = () => {
+    const L = s.photo;                                    // painted backdrop: the weapon lies on the anvil of the picture
+    if (L) return {cx: L.ax, ay: L.ay, aw: L.aw, wy: L.ay - 8, ws: Math.min(W * 0.56, 230)};
     const cx = W / 2, ay = H - 40, aw = Math.min(W * 0.5, 240);
     return {cx, ay, aw, wy: ay - 22, ws: Math.min(W * 0.58, 230)};
   };
@@ -108,6 +110,26 @@ export function createForgeStage(canvas, {onImpact} = {}) {
     }
   }
 
+  // Holographic call-outs in the top corners with leader lines to the blade: state on the left, power on the right.
+  function drawCallouts(cx, wy, ws) {
+    if (W < 260 || s.cocoon) return;
+    const left = s.heat > 0.15 ? '[ РАСКАЛЁННАЯ СТАЛЬ ]' : `[ ${s.art.el.n.toUpperCase()} · ${s.art.wp.n.toUpperCase()} ]`;
+    const right = Number.isFinite(s.art.power) ? `[ МОЩЬ: ${Math.round(s.art.power).toLocaleString('ru-RU')} ]` : null;
+    const c = s.od ? '#ffcc33' : s.hue;
+    ctx.save();
+    ctx.font = '700 10px "JetBrains Mono", monospace'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = c; ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.shadowColor = c; ctx.shadowBlur = 6;
+    const tag = (text, x, align, tx) => {
+      const w = ctx.measureText(text).width, x0 = align === 'left' ? x : x - w;
+      ctx.globalAlpha = 0.55; ctx.fillStyle = '#05070c'; ctx.fillRect(x0 - 4, 14, w + 8, 16);
+      ctx.globalAlpha = 0.95; ctx.fillStyle = c; ctx.textAlign = align; ctx.fillText(text, x, 22);
+      ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(align === 'left' ? x0 + w / 2 : x0 + w / 2, 30); ctx.lineTo(tx, wy - 10); ctx.lineTo(tx, wy - 4); ctx.stroke();
+    };
+    tag(left, 14, 'left', cx - ws * 0.3);
+    if (right) tag(right, W - 14, 'right', cx + ws * 0.3);
+    ctx.restore();
+  }
+
   function drawIngot(cx, wy, t) {
     const w = 120, g = ctx.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
     const pulse = 0.75 + 0.25 * Math.sin(t * 8);
@@ -153,26 +175,39 @@ export function createForgeStage(canvas, {onImpact} = {}) {
   }
 
   function draw() {
+    s.photo = photoLayout(s.loc, W, H);
     const {cx, ay, aw, wy, ws} = geo(), t = reduced ? 0 : clock / 1000;   // reduced motion: decor holds still, strikes still play
     ctx.save();
     ctx.clearRect(0, 0, W, H);
     if (s.shake > 0.2) ctx.translate((Math.random() - 0.5) * s.shake * 2, (Math.random() - 0.5) * s.shake * 2);   // camera recoil
     const g = {W, H, cx, ay, aw, wy, ws, t, clock, reduced, hue: s.hue, od: s.od, level: s.level};
-    const [top, bottom] = fxOf(s.loc).bg, bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, s.od ? '#2b1f05' : top); bg.addColorStop(1, bottom);
-    ctx.fillStyle = bg; ctx.fillRect(-10, -10, W + 20, H + 20);
-    drawBackdrop(ctx, s.loc, g);
-    if (s.level >= 2 && (s.loc === 'neo' || s.loc === 'quantum')) drawGrid(t);
-    if (s.level >= 5 && s.loc === 'neo') drawSingularity(cx, t);       // other locations have their own sky-borne striker
+    if (s.photo) {
+      ctx.fillStyle = '#000'; ctx.fillRect(-10, -10, W + 20, H + 20);   // shake edges
+      drawPhotoScene(ctx, s.loc, g, s.photo);
+      if (s.od) { ctx.fillStyle = '#ffcc3318'; ctx.fillRect(0, 0, W, H); }
+    } else {
+      const [top, bottom] = fxOf(s.loc).bg, bg = ctx.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, s.od ? '#2b1f05' : top); bg.addColorStop(1, bottom);
+      ctx.fillStyle = bg; ctx.fillRect(-10, -10, W + 20, H + 20);
+      drawBackdrop(ctx, s.loc, g);
+      if (s.level >= 2 && (s.loc === 'neo' || s.loc === 'quantum')) drawGrid(t);
+      if (s.level >= 5 && s.loc === 'neo') drawSingularity(cx, t);     // other locations have their own sky-borne striker
+    }
     if (s.level >= 3) drawRing(cx, wy - 6, ws, 'back');
-    if (s.level >= 2) drawEmitters(cx, ay, aw, wy, ws, t);
-    drawAnvilFor(ctx, s.loc, g);
+    if (!s.photo) {
+      if (s.level >= 2) drawEmitters(cx, ay, aw, wy, ws, t);
+      drawAnvilFor(ctx, s.loc, g);
+    }
     if (s.pillar) {
       const g = ctx.createLinearGradient(cx - 40, 0, cx + 40, 0);
       g.addColorStop(0, 'transparent'); g.addColorStop(0.5, s.pillar.color); g.addColorStop(1, 'transparent');
       ctx.globalAlpha = s.pillar.life; ctx.fillStyle = g; ctx.fillRect(cx - 40, 0, 80, ay); ctx.globalAlpha = 1;
     }
-    if (s.art) drawWeapon(ctx, s.art, cx, wy, ws, {t, heat: s.heat}); else drawIngot(cx, wy, t);
+    const shadow = ctx.createRadialGradient(cx, ay + 2, 2, cx, ay + 2, ws * 0.5);           // soft contact shadow on the anvil
+    shadow.addColorStop(0, 'rgba(0,0,0,0.55)'); shadow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.save(); ctx.translate(cx, ay + 2); ctx.scale(1, 0.18); ctx.translate(-cx, -(ay + 2));
+    ctx.fillStyle = shadow; ctx.fillRect(cx - ws * 0.5, ay + 2 - ws * 0.5, ws, ws); ctx.restore();
+    if (s.art) { drawWeapon(ctx, s.art, cx, wy, ws, {t, heat: s.heat}); drawCallouts(cx, wy, ws); } else drawIngot(cx, wy, t);
     if (s.cocoon) {
       ctx.strokeStyle = s.cocoon.color; ctx.lineWidth = 2; ctx.shadowColor = s.cocoon.color; ctx.shadowBlur = 16;
       ctx.fillStyle = s.cocoon.color + '22';
@@ -212,8 +247,12 @@ export function createForgeStage(canvas, {onImpact} = {}) {
   }
 
   return {
-    start() { if (running) return; running = true; resize(); last = performance.now(); raf = requestAnimationFrame(frame); },
-    stop() { running = false; cancelAnimationFrame(raf); },
+    start() {
+      if (running) return; running = true; resize(); last = performance.now(); raf = requestAnimationFrame(frame);
+      ro = typeof ResizeObserver === 'function' ? new ResizeObserver(resize) : null;   // the desktop stage is a flexible grid row
+      ro?.observe(canvas);
+    },
+    stop() { running = false; cancelAnimationFrame(raf); ro?.disconnect(); ro = null; },
     resize,
     setScene(o) { Object.assign(s, o); },
     setArtifact(art) { s.art = art; },

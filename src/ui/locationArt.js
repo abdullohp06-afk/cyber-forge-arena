@@ -14,6 +14,21 @@ export const fxOf = loc => LOC_FX[loc] ?? LOC_FX.neo;
 
 /* ---------- backdrops ---------- */
 
+/** Big still gradients are painted once per size into an offscreen canvas and then only stamped: fills of the whole
+ *  stage with radial gradients every frame were the main cost on large desktop stages. */
+const layers = new Map();
+function still(ctx, key, W, H, paint) {
+  const k = `${key}:${Math.round(W)}x${Math.round(H)}`;
+  let c = layers.get(k);
+  if (!c) {
+    c = document.createElement('canvas'); c.width = Math.max(1, Math.round(W)); c.height = Math.max(1, Math.round(H));
+    paint(c.getContext('2d'));
+    layers.set(k, c);
+    if (layers.size > 16) layers.delete(layers.keys().next().value);
+  }
+  ctx.drawImage(c, 0, 0, W, H);
+}
+
 function fan(ctx, x, y, r, a, hue) {
   ctx.strokeStyle = '#2a3654'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
   ctx.fillStyle = '#1a2238';
@@ -58,9 +73,11 @@ const BACK = {
   },
   abyss(ctx, g) {                                                          // void with a rift glow and drifting rock islands
     const {W, H, cx, ay, t} = g;
-    const glow = ctx.createRadialGradient(cx, ay - 20, 10, cx, ay - 20, W * 0.6);
-    glow.addColorStop(0, '#b06bff33'); glow.addColorStop(1, 'transparent');
-    ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+    still(ctx, 'abyss', W, H, c => {
+      const glow = c.createRadialGradient(cx, ay - 20, 10, cx, ay - 20, W * 0.6);
+      glow.addColorStop(0, '#b06bff33'); glow.addColorStop(1, 'transparent');
+      c.fillStyle = glow; c.fillRect(0, 0, W, H);
+    });
     ctx.fillStyle = '#1d1233';
     for (let i = 0; i < 5; i++) {
       const x = rnd(i + 3) * W, y = 20 + rnd(i + 9) * 50 + Math.sin(t * 0.7 + i) * 3, s = 10 + rnd(i) * 16;
@@ -105,23 +122,27 @@ const BACK = {
       ctx.fillRect(rnd(i) * W, rnd(i + 99) * ay, 1.2, 1.2);
     }
     ctx.globalAlpha = 1;
-    const planet = ctx.createRadialGradient(W * 0.1, H * 1.6, H * 0.6, W * 0.1, H * 1.6, H * 1.25);
-    planet.addColorStop(0, '#2a1050'); planet.addColorStop(0.92, '#ff336655'); planet.addColorStop(1, 'transparent');
-    ctx.fillStyle = planet; ctx.fillRect(0, 0, W, H);
+    still(ctx, 'quantum', W, H, c => {
+      const planet = c.createRadialGradient(W * 0.1, H * 1.6, H * 0.6, W * 0.1, H * 1.6, H * 1.25);
+      planet.addColorStop(0, '#2a1050'); planet.addColorStop(0.92, '#ff336655'); planet.addColorStop(1, 'transparent');
+      c.fillStyle = planet; c.fillRect(0, 0, W, H);
+    });
     ctx.strokeStyle = '#ff336622'; ctx.lineWidth = 1;
     for (let x = (t * 12) % 24; x < W; x += 24) { ctx.beginPath(); ctx.moveTo(x, ay + 14); ctx.lineTo(g.cx + (x - g.cx) * 2.2, H); ctx.stroke(); }
   },
   astral(ctx, g) {                                                         // orbit of a star: sun glow, golden columns, star dust
     const {W, H, cx, ay, t} = g;
-    const sun = ctx.createRadialGradient(cx, -H * 0.25, 6, cx, -H * 0.25, H * 1.1);
-    sun.addColorStop(0, '#fff6c8'); sun.addColorStop(0.25, '#ffe06688'); sun.addColorStop(1, 'transparent');
-    ctx.fillStyle = sun; ctx.fillRect(0, 0, W, H);
-    for (const x of [W * 0.1, W * 0.9]) {
-      const col = ctx.createLinearGradient(x - 10, 0, x + 10, 0);
-      col.addColorStop(0, '#6b5212'); col.addColorStop(0.5, '#ffe066'); col.addColorStop(1, '#6b5212');
-      ctx.fillStyle = col; ctx.fillRect(x - 9, 18, 18, ay - 4);
-      ctx.fillRect(x - 14, 12, 28, 8); ctx.fillRect(x - 14, ay + 8, 28, 6);
-    }
+    still(ctx, 'astral', W, H, c => {
+      const sun = c.createRadialGradient(cx, -H * 0.25, 6, cx, -H * 0.25, H * 1.1);
+      sun.addColorStop(0, '#fff6c8'); sun.addColorStop(0.25, '#ffe06688'); sun.addColorStop(1, 'transparent');
+      c.fillStyle = sun; c.fillRect(0, 0, W, H);
+      for (const x of [W * 0.1, W * 0.9]) {
+        const col = c.createLinearGradient(x - 10, 0, x + 10, 0);
+        col.addColorStop(0, '#6b5212'); col.addColorStop(0.5, '#ffe066'); col.addColorStop(1, '#6b5212');
+        c.fillStyle = col; c.fillRect(x - 9, 18, 18, ay - 4);
+        c.fillRect(x - 14, 12, 28, 8); c.fillRect(x - 14, ay + 8, 28, 6);
+      }
+    });
     ctx.fillStyle = '#fff1a8';
     for (let i = 0; i < 30; i++) {
       const x = rnd(i) * W + Math.sin(t + i) * 4, y = (t * 14 + rnd(i + 40) * H) % H;
@@ -197,57 +218,102 @@ const ANVIL = {
 
 /* ---------- strikers: what hits the blank ---------- */
 
-function slabHammer(ctx, cx, y, w, h, top, bottom, band) {
-  const gr = ctx.createLinearGradient(0, y, 0, y + h);
-  gr.addColorStop(0, top); gr.addColorStop(1, bottom);
-  ctx.fillStyle = gr; ctx.fillRect(cx - w / 2, y, w, h);
-  if (band) { ctx.fillStyle = band; ctx.shadowColor = band; ctx.shadowBlur = 10; ctx.fillRect(cx - w / 2, y + h - 4, w, 4); ctx.shadowBlur = 0; }
+/* ---------- strikers: detailed machines that drop onto the blade ---------- */
+
+const bob = (g, ms, amp) => g.reduced ? 0 : Math.sin(g.clock / ms) * amp;
+function chrome(ctx, x0, x1) {
+  const gr = ctx.createLinearGradient(x0, 0, x1, 0);
+  gr.addColorStop(0, '#2a3246'); gr.addColorStop(0.35, '#eef4ff'); gr.addColorStop(0.6, '#8995ad'); gr.addColorStop(1, '#1c2232');
+  return gr;
 }
+function steel(ctx, x, y, w, h, light, dark) {
+  const gr = ctx.createLinearGradient(0, y, 0, y + h);
+  gr.addColorStop(0, light); gr.addColorStop(0.55, dark); gr.addColorStop(1, '#0b0f18');
+  ctx.fillStyle = gr; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#ffffff2a'; ctx.fillRect(x, y, w, 2);                              // top bevel catches the light
+  ctx.strokeStyle = '#05070c'; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h);
+}
+function rivets(ctx, x, y, w, h) {
+  ctx.fillStyle = '#c9d3e6';
+  for (const [px, py] of [[x + 4, y + 4], [x + w - 4, y + 4], [x + 4, y + h - 4], [x + w - 4, y + h - 4]]) { ctx.beginPath(); ctx.arc(px, py, 1.6, 0, TAU); ctx.fill(); }
+}
+function hazard(ctx, x, y, w, h) {
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.fillStyle = '#ffcc33'; ctx.fillRect(x, y, w, h); ctx.fillStyle = '#111';
+  for (let i = -h; i < w; i += 10) { ctx.beginPath(); ctx.moveTo(x + i, y + h); ctx.lineTo(x + i + 5, y + h); ctx.lineTo(x + i + 5 + h, y); ctx.lineTo(x + i + h, y); ctx.fill(); }
+  ctx.restore();
+}
+function glowBar(ctx, x, y, w, h, c) { ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 12; ctx.fillRect(x, y, w, h); ctx.shadowBlur = 0; }
 
 const STRIKER = {
-  neo(ctx, g, ph) {                                                        // pneumatic hammer with hazard stripes
-    const {cx, wy, level, od, hue, clock, reduced} = g, rest = -20, hit = wy - 44;
-    const y = ph === null ? rest + (reduced ? 0 : Math.sin(clock / 400) * 2) : rest + (hit - rest) * ph;
-    ctx.fillStyle = '#2a3350'; ctx.fillRect(cx - 5, -10, 10, y + 10);
-    const hw = level >= 5 ? 76 : 64;
-    slabHammer(ctx, cx, y, hw, 30, '#6b7a96', '#232b42', null);
-    if (level === 1) { ctx.fillStyle = '#ffcc33'; for (let x = -hw / 2 + 4; x < hw / 2 - 6; x += 14) ctx.fillRect(cx + x, y + 24, 7, 4); }
-    else { const c = od ? '#ffcc33' : level >= 5 ? '#ff3366' : hue; ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 10; ctx.fillRect(cx - hw / 2, y + 26, hw, 4); ctx.shadowBlur = 0; }
+  neo(ctx, g, ph) {                                                        // pneumatic cyber-hammer: chrome rod, hazard band, neon face
+    const {cx, wy, level, od, hue} = g, rest = -18, hit = wy - 50;
+    const y = ph === null ? rest + bob(g, 400, 2) : rest + (hit - rest) * ph;
+    const hw = level >= 5 ? 84 : 70, c = od ? '#ffcc33' : level >= 5 ? '#ff3366' : hue;
+    ctx.fillStyle = chrome(ctx, cx - 6, cx + 6); ctx.fillRect(cx - 6, -10, 12, y + 4);
+    steel(ctx, cx - 14, y - 8, 28, 12, '#55617a', '#232b42');
+    steel(ctx, cx - hw / 2, y + 4, hw, 26, '#7a879f', '#262f47'); rivets(ctx, cx - hw / 2, y + 4, hw, 26);
+    hazard(ctx, cx - hw / 2 + 9, y + 10, hw - 18, 7);
+    glowBar(ctx, cx - hw / 2, y + 30, hw, 4, c);
+    steel(ctx, cx - hw / 2 + 6, y + 34, hw - 12, 8, '#b5c0d4', '#3a4458');
   },
-  abyss(ctx, g, ph) {                                                      // a dark monolith falls onto the slab
-    const {cx, wy, clock, reduced, od} = g, rest = -24, hit = wy - 78;
-    const y = ph === null ? rest + (reduced ? 0 : Math.sin(clock / 500) * 3) : rest + (hit - rest) * ph;
-    ctx.fillStyle = '#120a20'; ctx.fillRect(cx - 18, y, 36, 70);
-    ctx.strokeStyle = '#3b2266'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 18, y, 36, 70);
-    const c = od ? '#ffcc33' : '#c99bff';
-    ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 16; ctx.fillRect(cx - 2, y + 10, 4, 50); ctx.shadowBlur = 0;
+  abyss(ctx, g, ph) {                                                      // gravity monolith: obsidian wedge with a rune crack and orbiting shards
+    const {cx, wy, od, t} = g, rest = -30, hit = wy - 86, c = od ? '#ffcc33' : '#c99bff';
+    const y = ph === null ? rest + bob(g, 500, 4) : rest + (hit - rest) * ph;
+    ctx.fillStyle = '#b06bff1f'; ctx.beginPath(); ctx.ellipse(cx, y + 40, 42, 54, 0, 0, TAU); ctx.fill();
+    const gr = ctx.createLinearGradient(cx - 22, 0, cx + 22, 0);
+    gr.addColorStop(0, '#0b0614'); gr.addColorStop(0.45, '#2b1a48'); gr.addColorStop(1, '#07040d');
+    ctx.fillStyle = gr; ctx.beginPath();
+    ctx.moveTo(cx - 16, y); ctx.lineTo(cx + 16, y); ctx.lineTo(cx + 22, y + 58); ctx.lineTo(cx, y + 78); ctx.lineTo(cx - 22, y + 58); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#4b2d80'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.strokeStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 14; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx, y + 8); ctx.lineTo(cx - 6, y + 24); ctx.lineTo(cx + 4, y + 34); ctx.lineTo(cx - 3, y + 52); ctx.lineTo(cx, y + 70);
+    ctx.moveTo(cx - 6, y + 24); ctx.lineTo(cx - 14, y + 31); ctx.moveTo(cx + 4, y + 34); ctx.lineTo(cx + 13, y + 41); ctx.stroke();
+    ctx.shadowBlur = 0; ctx.fillStyle = '#3b2266';
+    for (let i = 0; i < 3; i++) {
+      const a = t * 1.4 + i * TAU / 3, sx = cx + Math.cos(a) * 32, sy = y + 36 + Math.sin(a) * 10;
+      ctx.beginPath(); ctx.moveTo(sx, sy - 6); ctx.lineTo(sx + 4, sy); ctx.lineTo(sx, sy + 6); ctx.lineTo(sx - 4, sy); ctx.fill();
+    }
   },
-  titan(ctx, g, ph) {                                                      // twin titanium press
-    const {cx, wy, od} = g, rest = -12, hit = wy - 44, y = ph === null ? rest : rest + (hit - rest) * ph;
+  titan(ctx, g, ph) {                                                      // twin titanium hydraulic press on a riveted crossbeam
+    const {cx, wy, od} = g, rest = -14, hit = wy - 50, c = od ? '#ffcc33' : '#ff7a1a';
+    const y = ph === null ? rest : rest + (hit - rest) * ph;
+    steel(ctx, cx - 64, -6, 128, 14, '#8f7a68', '#2e2018'); rivets(ctx, cx - 64, -6, 128, 14);
     for (const dx of [-30, 30]) {
-      ctx.fillStyle = '#3a2a20'; ctx.fillRect(cx + dx - 4, -10, 8, y + 10);
-      slabHammer(ctx, cx + dx, y, 44, 30, '#8f7a68', '#2e2018', od ? '#ffcc33' : '#ff7a1a');
+      ctx.fillStyle = chrome(ctx, cx + dx - 5, cx + dx + 5); ctx.fillRect(cx + dx - 5, 8, 10, y);
+      steel(ctx, cx + dx - 24, y + 6, 48, 28, '#a08a76', '#3a2a20'); rivets(ctx, cx + dx - 24, y + 6, 48, 28);
+      ctx.fillStyle = '#000a'; ctx.fillRect(cx + dx - 15, y + 15, 30, 3); ctx.fillRect(cx + dx - 15, y + 22, 30, 3);
+      glowBar(ctx, cx + dx - 24, y + 34, 48, 5, c);
     }
   },
-  quantum(ctx, g, ph) {                                                    // emitter + a gravity beam that pulses on the strike
-    const {cx, wy, clock, od} = g, c = od ? '#ffcc33' : '#ff3366';
+  quantum(ctx, g, ph) {                                                    // ceiling emitter: hex housing, spinning rings, laser on the strike
+    const {cx, wy, clock, od, t} = g, c = od ? '#ffcc33' : '#ff3366', top = 16;
     ctx.fillStyle = '#1b1030'; ctx.beginPath();
-    for (let i = 0; i < 6; i++) { const a = i / 6 * TAU; ctx.lineTo(cx + Math.cos(a) * 16, 12 + Math.sin(a) * 9); }
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 14; ctx.beginPath(); ctx.arc(cx, 14, 4 + Math.sin(clock / 150), 0, TAU); ctx.fill();
+    for (let i = 0; i < 6; i++) { const a = i / 6 * TAU; ctx.lineTo(cx + Math.cos(a) * 22, top + Math.sin(a) * 12); }
+    ctx.closePath(); ctx.fill(); ctx.strokeStyle = '#5b3a8a'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1.5;
+    for (let k = 0; k < 2; k++) { ctx.globalAlpha = 0.5 + 0.4 * Math.sin(t * 4 + k); ctx.beginPath(); ctx.ellipse(cx, top + 12 + k * 5, 16 + k * 6, 3 + k * 1.5, 0, 0, TAU); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 14; ctx.beginPath(); ctx.arc(cx, top + 4, 4 + Math.sin(clock / 150), 0, TAU); ctx.fill();
+    const len = wy - top - 14;
     if (ph !== null) {
-      ctx.globalAlpha = 0.35 + 0.65 * ph; ctx.lineWidth = 3 + ph * 6; ctx.strokeStyle = c;
-      ctx.beginPath(); ctx.moveTo(cx, 20); ctx.lineTo(cx, wy - 8); ctx.stroke();
-      ctx.lineWidth = 1.5; ctx.strokeStyle = '#ffffff'; ctx.beginPath(); ctx.moveTo(cx, 20); ctx.lineTo(cx, wy - 8); ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-    ctx.shadowBlur = 0;
+      ctx.globalAlpha = 0.35 + 0.65 * ph; ctx.lineWidth = 4 + ph * 10; ctx.strokeStyle = c;
+      ctx.beginPath(); ctx.moveTo(cx, top + 10); ctx.lineTo(cx, wy - 6); ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+      ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 1.5;
+      for (let i = 0; i < 3; i++) { const yy = top + 14 + ((clock / 2 + i * len / 3) % len); ctx.beginPath(); ctx.ellipse(cx, yy, 8 + ph * 8, 2.5, 0, 0, TAU); ctx.stroke(); }
+    } else { ctx.globalAlpha = 0.28; ctx.lineWidth = 1; ctx.strokeStyle = c; ctx.beginPath(); ctx.moveTo(cx, top + 10); ctx.lineTo(cx, wy - 6); ctx.stroke(); }
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
   },
-  astral(ctx, g, ph) {                                                     // a solar lens focuses a beam from the sky
-    const {cx, wy, clock, od} = g;
-    ctx.strokeStyle = '#ffe066'; ctx.lineWidth = 2; ctx.shadowColor = '#ffe066'; ctx.shadowBlur = 12;
-    ctx.beginPath(); ctx.ellipse(cx, 14, 30, 7, 0, 0, TAU); ctx.stroke();
-    ctx.fillStyle = '#fff6c855'; ctx.fill();
+  astral(ctx, g, ph) {                                                     // solar lens: twin golden rings, turning rays, a beam from the sky
+    const {cx, wy, clock, od, t} = g;
+    ctx.strokeStyle = '#ffe066'; ctx.lineWidth = 2.5; ctx.shadowColor = '#ffe066'; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.ellipse(cx, 14, 32, 8, 0, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(cx, 14, 24, 5, 0, 0, TAU); ctx.stroke();
+    ctx.fillStyle = '#fff6c84d'; ctx.fill();
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < 8; i++) { const a = t * 0.6 + i * TAU / 8; ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * 34, 14 + Math.sin(a) * 9); ctx.lineTo(cx + Math.cos(a) * 44, 14 + Math.sin(a) * 12); ctx.stroke(); }
+    ctx.globalAlpha = 1;
     if (ph !== null) {
       const w = 6 + ph * 18, beam = ctx.createLinearGradient(cx - w, 0, cx + w, 0);
       beam.addColorStop(0, 'transparent'); beam.addColorStop(0.5, od ? '#ffffff' : '#fff6c8'); beam.addColorStop(1, 'transparent');
@@ -256,6 +322,67 @@ const STRIKER = {
     ctx.shadowBlur = 0;
   },
 };
+
+/* ---------- painted 2D backdrops (public/bg) ---------- */
+
+// x, y: the anvil face centre as a share of the picture; w: anvil face width share. Measured on the art itself.
+const PHOTO = {
+  neo:     {src: 'bg/neo.jpg', x: 0.498, y: 0.565, w: 0.25},
+  abyss:   {src: 'bg/abyss.jpg', x: 0.494, y: 0.497, w: 0.27},
+  titan:   {src: 'bg/titan.webp', x: 0.5, y: 0.54, w: 0.26},
+  quantum: {src: 'bg/quantum.jpg', x: 0.5, y: 0.62, w: 0.19},
+  astral:  {src: 'bg/astral.jpg', x: 0.493, y: 0.622, w: 0.2},
+  arena:   {src: 'bg/arena.jpg', x: 0.5, y: 0.73, w: 0.42},
+};
+const imgs = {};
+export const bgUrl = key => (import.meta.env?.BASE_URL ?? './') + PHOTO[key].src;
+/** The picture once it has loaded; null before that (or when missing), so callers fall back to the procedural scene. */
+export function bgImage(key) {
+  if (!PHOTO[key] || typeof Image === 'undefined') return null;
+  let im = imgs[key];
+  if (!im) { im = imgs[key] = new Image(); im.decoding = 'async'; im.src = bgUrl(key); }
+  return im.complete && im.naturalWidth ? im : null;
+}
+/** Cover-crop without distortion; the anvil lands at (W/2, H·focusY) as far as the crop allows. */
+export function photoLayout(key, W, H, focusY = 0.7) {
+  const im = bgImage(key);
+  if (!im || !W || !H) return null;
+  const p = PHOTO[key], k = Math.max(W / im.naturalWidth, H / im.naturalHeight), dw = im.naturalWidth * k, dh = im.naturalHeight * k;
+  const fit = (v, lo) => Math.min(0, Math.max(lo, v));
+  const dx = fit(W / 2 - p.x * dw, W - dw), dy = fit(H * focusY - p.y * dh, H - dh);
+  return {im, dx, dy, dw, dh, ax: dx + p.x * dw, ay: dy + p.y * dh, aw: p.w * dw};
+}
+
+const alpha = (c, a) => c + Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, '0');
+/** The picture plus a breathing layer: anvil glow, drifting motes, per-location flicker and a vignette. */
+export function drawPhotoScene(ctx, loc, g, L) {
+  const {W, H, t, reduced, cx, ay} = g, fx = fxOf(loc), c = fx.sparks[0];
+  ctx.drawImage(L.im, L.dx, L.dy, L.dw, L.dh);
+  const pulse = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 2.2);
+  ctx.globalCompositeOperation = 'lighter';
+  const gl = ctx.createRadialGradient(cx, ay, 2, cx, ay, L.aw * 0.9);
+  gl.addColorStop(0, alpha(c, 0.22 + 0.16 * pulse)); gl.addColorStop(1, alpha(c, 0));
+  ctx.fillStyle = gl; ctx.fillRect(cx - L.aw, ay - L.aw, L.aw * 2, L.aw * 2);
+  if (!reduced) {
+    const rise = loc === 'titan' || loc === 'astral' || loc === 'abyss';
+    for (let i = 0; i < 26; i++) {
+      const sp = 0.25 + rnd(i + 9) * 0.6, cyc = (t * sp * 0.25 + rnd(i + 3)) % 1;
+      const x = rnd(i) * W + Math.sin(t * 0.7 + i) * 14, y = rise ? H + 6 - cyc * (H + 12) : -6 + cyc * (H + 12);
+      ctx.globalAlpha = 0.35 + 0.5 * Math.sin(cyc * Math.PI); ctx.fillStyle = fx.sparks[i % fx.sparks.length];
+      ctx.fillRect(x, y, 1.6 + rnd(i + 5) * 1.6, 1.6 + rnd(i + 5) * 1.6);
+    }
+    const tick = Math.floor(t * 6);
+    if (loc === 'neo' && rnd(tick) > 0.9) { ctx.globalAlpha = 0.07; ctx.fillStyle = '#00f0ff'; ctx.fillRect(0, 0, W, H); }      // neon tube flicker
+    if (loc === 'abyss' && rnd(tick + 1) > 0.95) { ctx.globalAlpha = 0.1; ctx.fillStyle = '#b06bff'; ctx.fillRect(0, 0, W, H); } // far lightning
+    if (loc === 'quantum') { const sy = (t * 60) % H; ctx.globalAlpha = 0.18; ctx.fillStyle = '#00f0ff'; ctx.fillRect(0, sy, W, 1.5); }
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  still(ctx, 'vignette', W, H, v => {
+    const r = v.createRadialGradient(W / 2, H * 0.6, Math.min(W, H) * 0.35, W / 2, H * 0.6, Math.max(W, H) * 0.75);
+    r.addColorStop(0, 'rgba(0,0,0,0)'); r.addColorStop(1, 'rgba(0,0,0,0.7)');
+    v.fillStyle = r; v.fillRect(0, 0, W, H);
+  });
+}
 
 export const drawBackdrop = (ctx, loc, g) => (BACK[loc] ?? BACK.neo)(ctx, g);
 export const drawAnvilFor = (ctx, loc, g) => (ANVIL[loc] ?? ANVIL.neo)(ctx, g);
@@ -283,10 +410,13 @@ export function drawOverlay(ctx, loc, g, s, canvas, dpr) {
     }
     ctx.globalAlpha = 1;
   }
-  if (s.glitch > 0.05 && !g.reduced) {
+  if (s.glitch > 0.05 && !g.reduced) {                     // RGB-split bars: no canvas self-copy (a GPU read-back stalls phones)
+    const k = Math.floor(g.clock / 40);
     for (let i = 0; i < 4; i++) {
-      const y = rnd(i + Math.floor(g.clock / 40)) * g.H, h = 4 + rnd(i + 7) * 10, dx = (rnd(i + 3 + Math.floor(g.clock / 40)) - 0.5) * 18 * s.glitch;
-      ctx.drawImage(canvas, 0, y * dpr, g.W * dpr, h * dpr, dx, y, g.W, h);
+      const y = rnd(i + k) * g.H, h = 3 + rnd(i + 7) * 8, dx = (rnd(i + 3 + k) - 0.5) * 20 * s.glitch;
+      ctx.globalAlpha = 0.35 * s.glitch; ctx.fillStyle = i % 2 ? '#00f0ff' : '#ff3366';
+      ctx.fillRect(dx, y, g.W, h);
     }
+    ctx.globalAlpha = 1;
   }
 }

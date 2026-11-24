@@ -11,3 +11,5 @@ dist-single/
 android/.gradle/
 android/**/build/
 .vercel/
+
+.vercel

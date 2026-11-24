@@ -1,7 +1,9 @@
 // Screens and game flow. Rules live in engine/, numbers in config/, ads in services/, juice in fx/.
 import {LOCATIONS, TIERS, KEEP_TIER, ARSENAL_MAX, COMBO, HEAT, OVERDRIVE, MAX_LOCKS, UPGRADES, CONTAINERS, LEAGUES, ARENA, CONTRACTS, ROMAN, GYRO} from '../config/gameData.js';
 import {minBet, betFor, spinIndex, sectorOf, makeCharge, chargeSplit, odds} from '../engine/gyro.js';
-import {createGyroWheel} from './gyroWheel.js';
+import {createGyroWheel, nearJackpot} from './gyroWheel.js';
+import {MINI, MINI_CFG, miniFee, miniPrize, rivalSkill, rivalReactionMs, reactWin, rivalTaps, tugPos, tugWin, aimScore, rivalAim, aimPos} from '../engine/minigames.js';
+import {bgUrl} from './locationArt.js';
 import {record, dexProgress, backfill} from '../engine/collection.js';
 import {showcaseHtml} from './showcase.js';
 import {ACH_CATS} from '../config/achievements.js';
@@ -27,7 +29,7 @@ const TABS = [['forge', 'Кузня', 'hammer'], ['arena', 'Арена', 'swords
 
 let S;                                                               // loaded in start(): after the cloud sync may have replaced the save
 const rt = {tab: 'forge', spin: null, lastTap: 0, lastManual: 0, streak: 0, heat: 0, odUntil: 0, cur: null, locks: {}, duel: null, lastFrame: performance.now(), auto: null,
-            stage: null, duelStage: null, temper: null, forceNext: null, wheel: null, gyroShare: GYRO.shares[0], gyroAdBusy: false, forceGyro: null, arsTab: 'stock', qTab: 'contracts'};
+            stage: null, duelStage: null, temper: null, forceNext: null, wheel: null, gyroShare: GYRO.shares[0], gyroAdBusy: false, forceGyro: null, arsTab: 'stock', qTab: 'contracts', sideTab: 'ach'};
 const isOD = () => performance.now() < rt.odUntil;
 const curLoc = () => locById(S.loc);
 const persist = () => { if (isFrozen()) return; announceAch(); save(S); cloudPush(S); syncProfile(S); pushPlatformSave(S); };   // frozen: a login/logout is swapping the save
@@ -61,7 +63,7 @@ function toast(text) {
   $('#toasts').append(el); setTimeout(() => el.remove(), 2600);
 }
 function hud() {
-  $('#credits').textContent = fmt(S.credits);
+  $('#credits').textContent = S.credits >= 1e7 ? `${(S.credits / 1e6).toLocaleString('ru-RU', {maximumFractionDigits: 1})} млн` : fmt(S.credits);
   $('#trophies').textContent = fmt(S.trophies);
   $('#mute').innerHTML = icon(S.muted ? 'mute' : 'sound');
   $('#mute').setAttribute('aria-label', S.muted ? 'Включить звук' : 'Выключить звук');
@@ -113,7 +115,8 @@ function artCard(a) {
 
 function shell() {
   $('#app').innerHTML = `<header class="hud">
-      <div class="logo">КИБЕР<span>КУЗНЯ</span></div>
+      <div class="logo">КИБЕР-КУЗНЯ</div>
+      <div class="hud-center" id="hudCenter"></div>
       <div class="pill" title="Кредиты">${icon('coin')}<b id="credits" class="num">0</b></div>
       <div class="pill gold" title="Кубки">${icon('trophy')}<b id="trophies" class="num">0</b></div>
       <button class="iconbtn" id="mute"></button>
@@ -127,6 +130,7 @@ function shell() {
 function show(tab) {
   if (rt.duel && !rt.duel.done) return;                 // a running duel can't be left
   if (rt.duel?.done && tab !== 'arena') { duelDone(tab); return; }
+  if (rt.mini) miniStop();
   if (rt.spin) rt.spin.finish();
   if (rt.temper) endTemper(null, true);
   rt.wheel?.finish(); rt.wheel = null;                  // leaving mid-spin lands the wheel at once: the stake is never lost
@@ -140,19 +144,29 @@ function show(tab) {
     on ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current');
   });
   ({forge: renderForge, arena: renderArena, arsenal: renderArsenal, shop: renderShop, quests: renderQuests})[tab]();
+  renderHudCenter();
   scrollTo(0, 0);
 }
 
 /* ---------- forge ---------- */
 
+const SLOT_ICONS = {el: 'bolt', wp: 'swords', pk: 'target', idx: 'medal'};
+
+function renderHudCenter() {
+  const el = $('#hudCenter');
+  if (!el) return;
+  const L = curLoc(), strip = rt.tab === 'forge' ? `<div class="locs" role="group" aria-label="Локации">${LOCATIONS.filter(l => S.unlocked.includes(l.id) || l === LOCATIONS.find(x => !S.unlocked.includes(x.id))).map(l => S.unlocked.includes(l.id)
+      ? `<button class="chip ${l.id === S.loc ? 'on' : ''}" style="--h:${l.hue}" data-act="loc" data-id="${l.id}" aria-pressed="${l.id === S.loc}">${l.name} <small class="num">×${l.mult}</small></button>`
+      : `<button class="chip locked" data-act="tab" data-id="shop">${icon('lock')}${l.name} <small class="num">${fmt(l.cost)}</small></button>`).join('')}</div>` : '';
+  el.innerHTML = `<div class="plate"><small>CYBER FORGE: ARENA</small><b>${L.name}</b></div>${strip}`;
+  const bar = el.querySelector('.locs'), on = bar?.querySelector('.on');
+  if (on) bar.scrollLeft = on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2;   // the current location sits in the middle
+}
+
 function renderForge() {
   const L = curLoc();
   rt.wheel?.finish();                                   // a location switch re-renders the forge mid-spin
   $('#screen').innerHTML = `<section class="view forge">
-    <div class="plate"><small>CYBER FORGE</small><b>${L.name}</b></div>
-    <div class="locs">${LOCATIONS.filter(l => S.unlocked.includes(l.id) || l === LOCATIONS.find(x => !S.unlocked.includes(x.id))).map(l => S.unlocked.includes(l.id)
-      ? `<button class="chip ${l.id === S.loc ? 'on' : ''}" style="--h:${l.hue}" data-act="loc" data-id="${l.id}" aria-pressed="${l.id === S.loc}">${l.name} <small class="num">×${l.mult}</small></button>`
-      : `<button class="chip locked" data-act="tab" data-id="shop">${icon('lock')}${l.name} <small class="num">${fmt(l.cost)}</small></button>`).join('')}</div>
     <div class="forge-grid">
     <aside class="side side-l" id="sideL" aria-label="Достижения"></aside>
     <div class="forge-main">
@@ -160,9 +174,9 @@ function renderForge() {
       <div class="temper" id="temper" hidden><div class="temper-bar"><i class="zone"></i><i class="marker"></i></div><span id="temperTxt">Жми в золотой зоне!</span></div></div>
     <div class="anvil" id="anvil" style="--h:${L.hue}">
       ${SLOTS.map(s => `<div class="slot slot-${s}" data-slot="${s}">
-          <div class="slot-top"><span class="slot-name">${SLOT_NAMES[s]}</span>
-            <button class="lockbtn" data-act="lock" data-id="${s}" aria-label="Замок: ${SLOT_NAMES[s]}" aria-pressed="false">${icon('unlock')}</button></div>
-          <div class="slot-val" id="sv-${s}">—</div><div class="slot-rank" id="sr-${s}"></div></div>`).join('')}
+          <div class="slot-top">${icon(SLOT_ICONS[s])}<span class="slot-name">${SLOT_NAMES[s]}</span></div>
+          <div class="slot-val" id="sv-${s}">—</div><div class="slot-rank" id="sr-${s}"></div>
+          <button class="lockbtn" data-act="lock" data-id="${s}" aria-label="Замок: ${SLOT_NAMES[s]}" aria-pressed="false">${icon('unlock')}</button></div>`).join('')}
     </div>
     <div class="verdict" id="verdict" aria-live="polite"><span class="hint">${tutHint()}</span></div>
     <div class="console">
@@ -199,7 +213,7 @@ function renderForge() {
       </section>
     </div>
   </div>`;
-  applyTheme();
+  applyTheme(); renderHudCenter();
   const btn = $('#forgeBtn');
   btn.addEventListener('pointerdown', e => { e.preventDefault(); forgeTap('tap'); });   // no 300 ms click delay
   btn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); forgeTap('tap'); } });
@@ -308,10 +322,17 @@ function renderSides() {
   if (!l || !r) return;
   const all = achStatus(S), done = all.filter(a => a.claimed).length, ready = all.filter(a => a.ready && !a.claimed);
   const next = [...ready, ...all.filter(a => !a.ready).sort((a, b) => b.pct - a.pct)].slice(0, 3);
-  l.innerHTML = `<div class="panel"><div class="panel-head">${icon('trophy')}<b>Достижения</b><span class="num">${done}/${all.length}</span></div>
+  const tab = rt.sideTab, cDone = S.contracts.filter(c => c.p >= c.n).length;
+  const tabs = `<div class="side-tabs" role="group" aria-label="Раздел">${[['ach', 'Достижения', ready.length], ['contracts', 'Контракты', cDone]].map(([id, n, k]) =>
+    `<button class="chip ${tab === id ? 'on' : ''}" data-act="sideTab" data-id="${id}" aria-pressed="${tab === id}">${n}${k ? `<span class="count num">${k}</span>` : ''}</button>`).join('')}</div>`;
+  l.innerHTML = tab === 'ach' ? `<div class="panel">${tabs}<div class="panel-head">${icon('trophy')}<b>Достижения</b><span class="num">${done}/${all.length}</span></div>
     ${next.map(a => `<div class="mini-ach ${a.ready ? 'ready' : ''}"><div class="mini-ach-n">${a.n}</div>
       <div class="prog"><i style="width:${Math.round(a.pct * 100)}%"></i></div></div>`).join('')}
-    <button class="btn ${ready.length ? '' : 'ghost'} wide" data-act="openAch">${ready.length ? `Забрать награды · ${ready.length}` : 'Все достижения'}</button></div>`;
+    <button class="btn ${ready.length ? '' : 'ghost'} wide" data-act="openAch">${ready.length ? `Забрать награды · ${ready.length}` : 'Все достижения'}</button></div>`
+    : `<div class="panel">${tabs}<div class="panel-head">${icon('target')}<b>Контракты</b></div>
+    ${S.contracts.map((c, i) => { const t = CONTRACTS.find(x => x.k === c.k), ok = c.p >= c.n;
+      return `<div class="mini-ach ${ok ? 'ready' : ''}"><div class="mini-ach-n">${t.t(c.n)}</div><div class="small num">${fmt(Math.min(c.p, c.n))} / ${fmt(c.n)} · +${fmt(c.reward)}</div>
+        <div class="prog"><i style="width:${Math.min(100, c.p / c.n * 100)}%"></i></div>${ok ? `<button class="btn small wide" data-act="claim" data-id="${i}">Забрать +${fmt(c.reward)}</button>` : ''}</div>`; }).join('')}</div>`;
   const li = leagueOf(S.trophies);
   r.innerHTML = `<div class="panel"><div class="panel-head">${icon('hammer')}<b>Улучшения кузни</b></div>
     ${SIDE_UPS.map(id => {
@@ -397,7 +418,7 @@ function onForged({a, e}, kind, od) {
   if (kind !== 'auto' && id != null && e.tier >= KEEP_TIER) startTemper();
 }
 
-const artLook = cur => ({...cur.a, tempered: !!cur.tempered});
+const artLook = cur => ({...cur.a, tempered: !!cur.tempered, power: cur.e.power, tier: cur.e.tier});   // power for the stage call-out, tier for rarity add-ons
 
 /** The scene when the slots land: the weapon appears; rare+ sends a shockwave; legendary+ a light pillar and a shattered cocoon. */
 function stageReveal(cur, kind) {
@@ -501,7 +522,7 @@ function gyroSpin(stake, paid = true, respun = false) {
     if (sec.m === 5) S.gyro.hits5++;
     persist();
     const el = $('#gyroWheel');
-    if (sec.m < 1) { sfx.temperFail(); burst(el, 16, ['#6b7a99', '#00f0ff', '#ffffff']); }
+    if (sec.m < 1) { sfx.temperFail(); burst(el, 16, ['#6b7a99', '#00f0ff', '#ffffff']); if (nearJackpot(i)) toast('Чуть-чуть до ×5!'); }
     else { sfx.fanfare(Math.min(5, GYRO.sectors.indexOf(sec) + 1)); vibrate(sec.m >= 3 ? [40, 30, 90] : 25); }
     if (sec.m >= 5) { burst(el, 140, ['#ff3366', '#ffcc33', '#ffffff', '#00f0ff']); $('#gyro')?.classList.add('flash'); shake($('#screen'), true); }
     else if (sec.m >= 3) burst(el, 50, [sec.c, '#ffffff']);
@@ -625,17 +646,20 @@ function renderArena() {
   if (rt.duel) return rt.duel.done ? renderResult() : renderDuel();
   const sq = squad(S.arsenal), power = squadPower(S.arsenal), li = leagueOf(S.trophies), lg = LEAGUES[li], next = LEAGUES[li + 1];
   $('#screen').innerHTML = `<section class="view arena">
-    <div class="card league">
-      <div class="row"><div class="grow"><div class="label">Лига</div><div class="league-name">${lg.n}</div></div>
+    <div class="card league arena-hero" style="--art:url('${bgUrl('arena')}');--lc:${LEAGUE_COLORS[li]}">
+      <div class="row">${emblem(li)}<div class="grow"><div class="label">Лига</div><div class="league-name">${lg.n}</div></div>
         <div class="big num">${icon('trophy')}${fmt(S.trophies)}</div></div>
       ${next ? `<div class="prog"><i style="width:${(S.trophies - lg.min) / (next.min - lg.min) * 100}%"></i></div>
                 <div class="small">До лиги «${next.n}»: <span class="num">${fmt(next.min - S.trophies)}</span> кубков</div>` : '<div class="small">Высшая лига — держи позицию!</div>'}
       ${S.streak > 1 ? `<div class="streak">Серия побед: <b class="num">${S.streak}</b></div>` : ''}
     </div>
-    <h2>Боевой отряд <span class="num accent">${fmt(power)}</span></h2>
-    <div class="squad">${[0, 1, 2].map(i => sq[i] ? artCard(sq[i]) : '<div class="art empty">Пустой слот<small>Выкуй «Редкий» или выше</small></div>').join('')}</div>
+    <h2>Боевой отряд <span class="squad-total">Общая мощь <b class="num accent">${fmt(power)}</b></span></h2>
+    <div class="pedestals">${[0, 1, 2].map(i => pedestal(sq[i], i)).join('')}</div>
     <p class="small">Сила тапа в бою: <b class="num">${tapPower(S.up.strike)}</b> · соперники твоего рейтинга: ~<span class="num">${fmt(ARENA.oppBase + ARENA.oppPerTrophy * S.trophies)}</span> мощи</p>
     <button class="forgebtn fight" data-act="duel">${icon('swords')}В БОЙ · 10 сек</button>
+    <h2>Мини-игры 1×1</h2>
+    <div class="minis">${MINI.map(m => `<button class="mini-card" data-act="mini" data-id="${m.id}">${icon(m.icon)}<b>${m.n}</b><small>${m.d}</small>
+      <span class="mini-stake num">${icon('coin')}${fmt(miniFee(curLoc().mult))} → +${fmt(miniPrize(curLoc().mult))}</span></button>`).join('')}</div>
     <h2>Сезон ${S.season} · ${lg.n}</h2>
     <ol class="board">${leaderboard(S.bots, S.trophies).map(r =>
       `<li class="${r.me ? 'me' : ''}"><span class="num">${r.rank}</span><span class="grow">${r.name}</span><b class="num">${fmt(r.t)}</b></li>`).join('')}</ol>
@@ -675,10 +699,12 @@ function startDuel() {
 function renderDuel() {
   const d = rt.duel;
   $('#screen').innerHTML = `<section class="view duel">
-    <div class="duel-timer num" id="dTimer">10.0</div>
-    <div class="fighter me"><div class="f-head"><span>Ты</span><b class="num" id="dMe">0</b></div><div class="bar"><i id="barMe"></i></div></div>
+    <div class="duel-top">
+      <div class="fighter me"><div class="f-head"><span>Ты</span><b class="num" id="dMe">0</b></div><div class="bar"><i id="barMe"></i></div></div>
+      <div class="duel-timer num" id="dTimer">10.0</div>
+      <div class="fighter opp"><div class="f-head"><b class="num" id="dOpp">0</b><span id="oppName"></span></div><div class="bar"><i id="barOpp"></i></div></div>
+    </div>
     <canvas id="duelScene" class="duel-scene" aria-hidden="true"></canvas>
-    <div class="fighter opp"><div class="f-head"><span id="oppName"></span><b class="num" id="dOpp">0</b></div><div class="bar"><i id="barOpp"></i></div></div>
     <button class="forgebtn fight" id="duelBtn">КОВАТЬ В БОЮ!</button>
     <p class="small center">Отряд дал стартовую мощь. Тапай как можно быстрее!</p>
   </section>`;
@@ -762,6 +788,152 @@ async function duelDone(nextTab = 'arena') {
   rt.duel = null;
   if (S.stats.duels % ARENA.interstitialEvery === 0) await showInterstitial(PLACEMENTS.INTERSTITIAL);
   show(nextTab);
+}
+
+/* ---------- league emblem & squad pedestals ---------- */
+
+const LEAGUE_COLORS = ['#8b97ad', '#cd7f32', '#c9d3e6', '#ffcc33', '#7fe3ff', '#b06bff', '#ff3366'];
+function emblem(li) {                                   // hexagon crest, one more star per league
+  const c = LEAGUE_COLORS[li], n = Math.min(li, 6), stars = Array.from({length: n}, (_, i) =>
+    `<circle cx="${32 + (i - (n - 1) / 2) * 8}" cy="56" r="2.2" fill="${c}"/>`).join('');
+  return `<svg class="emblem" viewBox="0 0 64 64" aria-hidden="true">
+    <defs><linearGradient id="emb${li}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}"/><stop offset="1" stop-color="#0b0f1a"/></linearGradient></defs>
+    <path d="M32 3l25 14v28L32 61 7 45V17z" fill="url(#emb${li})" stroke="${c}" stroke-width="2"/>
+    <path d="M32 11l18 10v20L32 51 14 41V21z" fill="#0b0f1a" stroke="${c}" stroke-opacity=".6"/>
+    <text x="32" y="38" text-anchor="middle" font-family="Orbitron, monospace" font-weight="900" font-size="15" fill="${c}">${LEAGUES[li].n[0]}</text>${stars}</svg>`;
+}
+function pedestal(a, i) {                               // best weapon in the middle, raised
+  if (!a) return `<div class="pedestal empty p${i}"><div class="ped-art">${icon('lock')}</div><small>Выкуй «Редкий»+</small><div class="ped-base"></div></div>`;
+  const t = TIERS[a.tier], rank = Math.min(5, Math.max(a.wp.r, a.el.r));
+  return `<div class="pedestal p${i}" style="--tc:${t.c}">
+    <div class="ped-art"><img src="${weaponThumb(a)}" alt="${a.el.n} · ${a.wp.n}" width="120" height="48"></div>
+    <div class="ped-rank"><b>${rank >= 5 ? 'Ω' : ROMAN[rank] || 'I'}</b> ${t.n}</div>
+    <div class="ped-pow num">${icon('bolt')}${fmt(a.power)}</div>
+    <div class="ped-base"></div></div>`;
+}
+
+/* ---------- mini-games 1×1: a rival from the arena pool, its play simulated from its rating ---------- */
+
+function startMini(id) {
+  if (rt.duel || rt.mini || !MINI.some(m => m.id === id)) return;
+  const fee = miniFee(curLoc().mult);
+  if (S.credits < fee) { toast('Не хватает кредитов'); return; }
+  ensureBots();
+  S.credits -= fee; persist(); hud();
+  const real = rt.nextOpp && Date.now() - rt.nextOpp.at < 120000 ? rt.nextOpp.p : null;
+  rt.nextOpp = null;
+  const bot = makeOpponent(S.trophies, S.bots), opp = real ? {name: real.name, trophies: real.trophies, real: true} : {name: bot.name, trophies: bot.trophies};
+  rt.mini = {id, opp, skill: rivalSkill(opp.trophies), noise: Math.random(), phase: 'intro', mine: 0, round: 0, scores: [], raf: 0, timer: 0, res: null};
+  if (id === 'aim') rt.mini.rival = Array.from({length: MINI_CFG.aimRounds}, () => rivalAim(rt.mini.skill));
+  renderMini();
+}
+
+function miniStop() {
+  const m = rt.mini;
+  if (!m) return;
+  cancelAnimationFrame(m.raf); clearTimeout(m.timer);
+  rt.mini = null;
+}
+
+const MINI_AREA = {
+  react: () => '<div class="react-lamp" id="reactLamp"><span>ЖДИ</span></div>',
+  tug: () => `<div class="tug"><i class="tug-cable"></i><i class="tug-zone me"></i><i class="tug-zone opp"></i><i class="tug-knot" id="tugKnot"></i></div>
+    <div class="tug-score num"><span id="tugMe">0</span><span id="tugOpp">0</span></div>`,
+  aim: () => `<div class="aim"><i class="aim-zone"></i><i class="aim-marker" id="aimMarker"></i></div><div class="aim-scores num" id="aimScores"></div>`,
+};
+
+function renderMini() {
+  const m = rt.mini, def = MINI.find(x => x.id === m.id);
+  $('#screen').innerHTML = `<section class="view mini mini-${m.id}" style="--art:url('${bgUrl('arena')}')">
+    <div class="mini-head"><span class="me">Ты</span><b>VS</b><span class="opp" id="miniOpp"></span></div>
+    <div class="mini-title">${icon(def.icon)}${def.n}</div>
+    <div class="mini-area" id="miniArea">${MINI_AREA[m.id]()}</div>
+    <div class="mini-msg" id="miniMsg" aria-live="polite"></div>
+    <div class="mini-ctrl" id="miniCtrl"><button class="forgebtn fight" id="miniBtn" disabled>ГОТОВЬСЯ</button></div>
+  </section>`;
+  $('#miniOpp').textContent = m.opp.real ? `${m.opp.name} · игрок` : m.opp.name;            // another player's nickname: text only
+  $('#miniBtn').addEventListener('pointerdown', e => { e.preventDefault(); miniTap(); });
+  let n = 3;
+  const count = () => {
+    if (rt.mini !== m) return;
+    if (n) { $('#miniMsg').textContent = n--; sfx.tick(); m.timer = setTimeout(count, 550); }
+    else miniGo();
+  };
+  count();
+}
+
+function miniGo() {
+  const m = rt.mini, btn = $('#miniBtn'), msg = $('#miniMsg');
+  btn.disabled = false;
+  if (m.id === 'react') {
+    m.phase = 'wait'; msg.textContent = 'Жди сигнала…'; btn.textContent = 'ЖДИ…';
+    m.timer = setTimeout(() => {
+      if (rt.mini !== m) return;
+      m.phase = 'go'; m.goAt = performance.now();
+      $('#reactLamp').classList.add('go'); $('#reactLamp span').textContent = 'ЖМИ!';
+      msg.textContent = 'СЕЙЧАС!'; btn.textContent = 'ЖМИ!'; sfx.impact(1); vibrate(20);
+      m.timer = setTimeout(() => miniEnd(false, 'Слишком медленно'), MINI_CFG.reactTimeoutMs);
+    }, 1200 + Math.random() * 2200);
+    return;
+  }
+  m.phase = 'play'; m.t0 = performance.now();
+  btn.textContent = m.id === 'tug' ? 'ТЯНИ!' : 'УДАР!';
+  msg.textContent = m.id === 'tug' ? 'Тапай быстрее соперника!' : `Удар 1 из ${MINI_CFG.aimRounds}: останови метку в центре`;
+  const loop = now => {
+    if (rt.mini !== m || m.phase !== 'play') return;
+    const el = now - m.t0;
+    if (m.id === 'tug') {
+      const theirs = rivalTaps(m.skill, el, () => m.noise), pos = tugPos(m.mine, theirs);
+      $('#tugKnot').style.left = `${50 - pos * 42}%`;
+      $('#tugMe').textContent = m.mine; $('#tugOpp').textContent = theirs;
+      if (Math.abs(pos) >= 1 || el >= MINI_CFG.tugMs) return miniEnd(tugWin(m.mine, theirs), `Ты: ${m.mine} тапов · соперник: ${theirs}`);
+    } else {
+      m.pos = aimPos(el / 1000, m.round);
+      $('#aimMarker').style.left = `${m.pos * 100}%`;
+    }
+    m.raf = requestAnimationFrame(loop);
+  };
+  m.raf = requestAnimationFrame(loop);
+}
+
+function miniTap() {
+  const m = rt.mini;
+  if (!m || m.res) return;
+  if (m.id === 'react') {
+    if (m.phase === 'wait') { clearTimeout(m.timer); miniEnd(false, 'Фальстарт: нажал до сигнала'); }
+    else if (m.phase === 'go') {
+      clearTimeout(m.timer);
+      const ms = Math.round(performance.now() - m.goAt), rv = rivalReactionMs(m.skill);
+      miniEnd(reactWin(ms, rv), `Ты: ${ms} мс · соперник: ${rv} мс`);
+    }
+    return;
+  }
+  if (m.phase !== 'play') return;
+  if (m.id === 'tug') { m.mine++; sfx.hit(); vibrate(5); const b = $('#miniBtn'); b.classList.remove('punch'); void b.offsetWidth; b.classList.add('punch'); return; }
+  const sc = aimScore(m.pos ?? 0);                                     // aim
+  m.scores.push(sc); m.round++;
+  sfx.impact(sc / 50); vibrate(sc >= 80 ? [20, 20, 40] : 15);
+  burst($('#aimMarker'), sc >= 80 ? 30 : 8, sc >= 80 ? ['#ffcc33', '#ffffff'] : ['#8b97ad']);
+  $('#aimScores').textContent = m.scores.map((x, i) => `${x}:${m.rival[i]}`).join('  ·  ');
+  if (m.round >= MINI_CFG.aimRounds) {
+    const a = m.scores.reduce((x, y) => x + y, 0), b = m.rival.reduce((x, y) => x + y, 0);
+    miniEnd(a > b, `Ты: ${a} очков · соперник: ${b}`);
+  } else $('#miniMsg').textContent = `Удар ${m.round + 1} из ${MINI_CFG.aimRounds}: метка ускоряется!`;
+}
+
+function miniEnd(win, detail) {
+  const m = rt.mini;
+  if (!m || m.res) return;
+  cancelAnimationFrame(m.raf); clearTimeout(m.timer);
+  m.phase = 'done'; m.res = {win};
+  const prize = miniPrize(curLoc().mult);
+  if (win) { addCredits(prize); persist(); hud(); sfx.victory(); burst($('#miniArea'), 110, ['#ffcc33', '#00f0ff', '#ffffff']); vibrate([40, 30, 90]); }
+  else { sfx.defeat(); vibrate(120); }
+  const msg = $('#miniMsg');
+  msg.innerHTML = `<b class="${win ? 'win' : 'lose'}">${win ? `ПОБЕДА +${fmt(prize)}` : 'ПОРАЖЕНИЕ'}</b><small></small>`;
+  msg.querySelector('small').textContent = detail;
+  $('#miniCtrl').innerHTML = `<div class="row2"><button class="btn" data-act="miniAgain">Ещё раз · <span class="num">${fmt(miniFee(curLoc().mult))}</span></button>
+    <button class="btn ghost" data-act="miniExit">К арене</button></div>`;
 }
 
 /* ---------- arsenal ---------- */
@@ -887,8 +1059,12 @@ const ACTIONS = {
   gyroSpin: () => gyroSpin(betFor(S.credits, rt.gyroShare, curLoc().mult)),
   gyroAd: () => gyroAd(),
   arsTab: id => { rt.arsTab = id; renderArsenal(); scrollTo(0, 0); },
+  sideTab: id => { rt.sideTab = id === 'contracts' ? 'contracts' : 'ach'; renderSides(); },
   openDex: () => { rt.arsTab = 'dex'; show('arsenal'); },
   duel: () => startDuel(),
+  mini: id => startMini(id),
+  miniAgain: () => { const id = rt.mini?.id; miniStop(); startMini(id); },
+  miniExit: () => show('arena'),
   rename: async () => {
     const r = await renameOnline($('#nickInput')?.value ?? '');
     toast(r?.ok ? `Ник сохранён: ${r.name}` : r?.error ?? 'Нет связи с сервером');
@@ -941,7 +1117,7 @@ const ACTIONS = {
     const c = S.contracts[+i];
     if (!c || c.p < c.n) return;
     addCredits(c.reward); sfx.fanfare(3); toast(`Контракт выполнен: +${fmt(c.reward)}`);
-    S.contracts.splice(+i, 1); fillContracts(); persist(); hud(); renderQuests();
+    S.contracts.splice(+i, 1); fillContracts(); persist(); hud(); rt.tab === 'quests' ? renderQuests() : renderSides();
   },
   auth: () => openAuth(() => { toast(`Вход выполнен: ${currentUser()}`); if (rt.tab === 'quests') renderQuests(); }),
   logout: () => { if (confirm('Выйти из аккаунта? Прогресс останется на сервере, а с этого устройства сотрётся.')) doLogout(); },
