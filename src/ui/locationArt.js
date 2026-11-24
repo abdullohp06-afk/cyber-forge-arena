@@ -335,14 +335,21 @@ const PHOTO = {
   arena:   {src: 'bg/arena.jpg', x: 0.5, y: 0.73, w: 0.42},
 };
 const imgs = {};
-export const bgUrl = key => (import.meta.env?.BASE_URL ?? './') + PHOTO[key].src;
-/** The picture once it has loaded; null before that (or when missing), so callers fall back to the procedural scene. */
+// Absolute: the URL also lands in CSS custom properties, which would otherwise resolve against /assets/.
+export const bgUrl = key => new URL((import.meta.env?.BASE_URL ?? './') + PHOTO[key].src, document.baseURI).href;
+/** The picture once it is decoded; null before that (or when missing), so callers fall back to the procedural scene.
+ *  Decoding off the main thread keeps the first strike in a new location from dropping frames. */
 export function bgImage(key) {
   if (!PHOTO[key] || typeof Image === 'undefined') return null;
   let im = imgs[key];
-  if (!im) { im = imgs[key] = new Image(); im.decoding = 'async'; im.src = bgUrl(key); }
-  return im.complete && im.naturalWidth ? im : null;
+  if (!im) {
+    im = imgs[key] = new Image(); im.decoding = 'async'; im.src = bgUrl(key);
+    if (im.decode) im.decode().then(() => { im.ready = true; }, () => {});
+  }
+  return (im.decode ? im.ready : im.complete) && im.naturalWidth ? im : null;
 }
+/** Start fetching and decoding every backdrop at boot. */
+export const preloadBackdrops = () => Object.keys(PHOTO).forEach(bgImage);
 /** Cover-crop without distortion; the anvil lands at (W/2, H·focusY) as far as the crop allows. */
 export function photoLayout(key, W, H, focusY = 0.7) {
   const im = bgImage(key);

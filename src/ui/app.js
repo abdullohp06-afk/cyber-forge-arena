@@ -3,7 +3,7 @@ import {LOCATIONS, TIERS, KEEP_TIER, ARSENAL_MAX, COMBO, HEAT, OVERDRIVE, MAX_LO
 import {minBet, betFor, spinIndex, sectorOf, makeCharge, chargeSplit, odds} from '../engine/gyro.js';
 import {createGyroWheel, nearJackpot} from './gyroWheel.js';
 import {MINI, MINI_CFG, miniFee, miniPrize, rivalSkill, rivalReactionMs, reactWin, rivalTaps, tugPos, tugWin, aimScore, rivalAim, aimPos} from '../engine/minigames.js';
-import {bgUrl} from './locationArt.js';
+import {bgUrl, preloadBackdrops} from './locationArt.js';
 import {record, dexProgress, backfill} from '../engine/collection.js';
 import {showcaseHtml} from './showcase.js';
 import {ACH_CATS} from '../config/achievements.js';
@@ -1167,6 +1167,7 @@ function frame(now) {
 /* ---------- boot ---------- */
 
 export function start() {
+  preloadBackdrops();
   S = load();
   if (!S.dexFilled) { backfill(S); persist(); }   // saves from before the catalog: fill it from the Arsenal once
   fillContracts(); ensureBots(); setMuted(S.muted);
