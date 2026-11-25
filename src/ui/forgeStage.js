@@ -15,7 +15,14 @@ export function createForgeStage(canvas, {onImpact} = {}) {
   const ctx = canvas.getContext('2d');
   let W = 0, H = 0, raf = 0, running = false, last = 0, clock = 0, dpr = 1, ro = null;
   const s = {level: 1, hue: '#00f0ff', loc: 'neo', combo: 0, od: false, auto: 0, art: null, heat: 0, shake: 0, freezeUntil: 0,
-             strikes: [], sparks: [], waves: [], pillar: null, cocoon: null, ring: 0, impacts: 0, fx: {}, flash: 0, glitch: 0};
+             strikes: [], sparks: [], waves: [], pillar: null, cocoon: null, ring: 0, impacts: 0, fx: {}, flash: 0, glitch: 0,
+             bump: -1e9, poke: -1e9, slowUntil: 0, rate: 1, artClock: 0};
+  // One damped spring drives both halves of a hammer blow: the anvil dips, the weapon hops. Full swing at
+  // contact, two overshoots, settled inside ~450 ms.
+  const SPRING_MS = 300;
+  const springAt = age => (age < 0 || age > 900 ? 0 : Math.exp(-age / 150) * Math.cos(Math.PI * 2 * age / SPRING_MS));
+  const anvilDip = () => springAt(clock - s.bump) * 5;
+  const weaponHop = () => springAt(clock - s.bump) * 7;
   const count = k => { s.fx[k] = (s.fx[k] || 0) + 1; };
 
   function resize() {
@@ -43,7 +50,7 @@ export function createForgeStage(canvas, {onImpact} = {}) {
 
   function impact(st) {
     const {cx, wy} = geo();
-    s.heat = 1; s.impacts++;
+    s.heat = 1; s.impacts++; s.bump = clock;
     if (!reduced) { s.shake = 3 + 2 * st.power; if (st.hitstop) s.freezeUntil = performance.now() + 55; }
     spray(st.drone ? cx + 18 : cx, wy - 6, 14 + 10 * st.power, sparkColors());
     if (!reduced) impactExtra(s.loc, spray, s, {cx, wy});
@@ -52,7 +59,11 @@ export function createForgeStage(canvas, {onImpact} = {}) {
 
   function update(dt) {
     const f = dt / 16.7, {cx, ay, aw} = geo();
-    s.heat = Math.max(0, s.heat - dt / 700);
+    // The scenery runs on its own warped clock: fans, wire pulses, furnace fire and rain all speed up with the
+    // combo (and again in OVERDRIVE). Accumulating instead of scaling `clock` keeps every loop continuous,
+    // so changing combo never makes an animation jump.
+    s.artClock += dt * (1 + s.combo * 0.9 + (s.od ? 0.6 : 0));
+    s.heat = Math.max(0, s.heat - dt / 800);                            // 0.8 s from white hot back to the element colour
     s.shake *= Math.pow(0.82, f);
     s.flash *= Math.pow(0.86, f); s.glitch *= Math.pow(0.88, f);
     if (!reduced) s.ring += (0.012 + s.combo * 0.1) * f;
@@ -176,11 +187,11 @@ export function createForgeStage(canvas, {onImpact} = {}) {
 
   function draw() {
     s.photo = photoLayout(s.loc, W, H);
-    const {cx, ay, aw, wy, ws} = geo(), t = reduced ? 0 : clock / 1000;   // reduced motion: decor holds still, strikes still play
+    const {cx, ay, aw, wy, ws} = geo(), t = reduced ? 0 : s.artClock / 1000;   // reduced motion: decor holds still, strikes still play
     ctx.save();
     ctx.clearRect(0, 0, W, H);
     if (s.shake > 0.2) ctx.translate((Math.random() - 0.5) * s.shake * 2, (Math.random() - 0.5) * s.shake * 2);   // camera recoil
-    const g = {W, H, cx, ay, aw, wy, ws, t, clock, reduced, hue: s.hue, od: s.od, level: s.level};
+    const g = {W, H, cx, ay, aw, wy, ws, t, clock, reduced, hue: s.hue, od: s.od, level: s.level, combo: s.combo};
     if (s.photo) {
       ctx.fillStyle = '#000'; ctx.fillRect(-10, -10, W + 20, H + 20);   // shake edges
       drawPhotoScene(ctx, s.loc, g, s.photo);
@@ -196,7 +207,7 @@ export function createForgeStage(canvas, {onImpact} = {}) {
     if (s.level >= 3) drawRing(cx, wy - 6, ws, 'back');
     if (!s.photo) {
       if (s.level >= 2) drawEmitters(cx, ay, aw, wy, ws, t);
-      drawAnvilFor(ctx, s.loc, g);
+      ctx.save(); ctx.translate(0, anvilDip()); drawAnvilFor(ctx, s.loc, g); ctx.restore();   // the anvil springs down under the blow
     }
     if (s.pillar) {
       const g = ctx.createLinearGradient(cx - 40, 0, cx + 40, 0);
@@ -207,7 +218,14 @@ export function createForgeStage(canvas, {onImpact} = {}) {
     shadow.addColorStop(0, 'rgba(0,0,0,0.55)'); shadow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.save(); ctx.translate(cx, ay + 2); ctx.scale(1, 0.18); ctx.translate(-cx, -(ay + 2));
     ctx.fillStyle = shadow; ctx.fillRect(cx - ws * 0.5, ay + 2 - ws * 0.5, ws, ws); ctx.restore();
-    if (s.art) { drawWeapon(ctx, s.art, cx, wy, ws, {t, heat: s.heat}); drawCallouts(cx, wy, ws); } else drawIngot(cx, wy, t);
+    const hop = wy - weaponHop(), pokeAge = clock - s.poke;                       // tapping the weapon sets it spinning
+    const spin = pokeAge >= 0 && pokeAge < 650 && !reduced ? (1 - pokeAge / 650) ** 2 * Math.PI * 2 : 0;
+    if (s.art) {
+      if (spin) { ctx.save(); ctx.translate(cx, hop); ctx.rotate(spin); ctx.translate(-cx, -hop); }
+      drawWeapon(ctx, s.art, cx, hop, ws, {t, heat: s.heat});
+      if (spin) ctx.restore();
+      drawCallouts(cx, hop, ws);
+    } else drawIngot(cx, hop, t);
     if (s.cocoon) {
       ctx.strokeStyle = s.cocoon.color; ctx.lineWidth = 2; ctx.shadowColor = s.cocoon.color; ctx.shadowBlur = 16;
       ctx.fillStyle = s.cocoon.color + '22';
@@ -239,7 +257,7 @@ export function createForgeStage(canvas, {onImpact} = {}) {
   function frame(now) {
     if (!running) return;
     if (!canvas.isConnected) { running = false; return; }
-    const real = now - last; last = now;
+    const real = (now - last) * (now < s.slowUntil ? s.rate : 1); last = now;
     // Strikes run on real time so the hammer lands with the slots even on slow first frames; physics steps stay capped.
     if (now >= s.freezeUntil) { clock += real; update(Math.min(50, real)); }   // hit-stop: the world holds still for a beat
     draw();
@@ -270,6 +288,16 @@ export function createForgeStage(canvas, {onImpact} = {}) {
       s.cocoon = null;
       spray(cx, wy, 70, [color, '#ffffff'], {speed: 9});
       spray(cx, wy - 10, 110, [color, '#ffffff', '#ffcc33'], {up: true, speed: 12});
+    },
+    /** Micro slow-motion for the biggest reveals: the scene runs at `rate` for `ms` of real time. */
+    slowmo(ms = 320, rate = 0.25) { count('slowmo'); s.slowUntil = performance.now() + ms; s.rate = rate; },
+    /** Easter egg: the player tapped the weapon itself. It rings, spins and throws sparks. */
+    poke() {
+      count('poke');
+      const {cx, wy} = geo();
+      s.poke = clock; s.bump = clock; s.heat = Math.max(s.heat, 0.45);
+      spray(cx, wy - 6, 26, s.art ? ['#ffffff', ...sparkColors()] : sparkColors(), {up: true, speed: 8});
+      s.waves.push({r: 6, life: 0.7, color: s.od ? '#ffcc33' : s.hue});
     },
     quench(ok) {                                                           // tempering result: gold flash or grey puff
       count(ok ? 'quenchOk' : 'quenchFail');

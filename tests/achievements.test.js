@@ -53,3 +53,22 @@ test('old saves load with empty achievements, a sane onboarding step and free-bo
   assert.deepEqual([b.ach, b.boxes, b.tut], [{claimed: ['f10'], seen: []}, {standard: 0, military: 3, titanium: 0}, 2]);
   assert.deepEqual(sanitizeAch(null), {claimed: [], seen: []});
 });
+
+test('«Забрать всё»: the bulk loop pays every ready award exactly once and empties the queue', () => {
+  const s = fresh();
+  s.stats.forges = 500; s.stats.rerolls = 60; s.gyro.spins = 40;        // enough progress for a batch of awards
+  const ready = readyToClaim(s);
+  assert.ok(ready.length >= 3, `expected a batch, got ${ready.length}`);
+
+  let credits = 0, boxes = 0;                                          // the same loop ACTIONS.claimAll runs
+  for (const a of ready) {
+    const r = claimAch(s, a.id);
+    assert.ok(r, `${a.id} should pay out`);
+    credits += r.credits ?? 0;
+    if (r.box) boxes++;
+  }
+  assert.ok(credits > 0 || boxes > 0);
+  assert.equal(readyToClaim(s).length, 0);                             // nothing is left to claim
+  assert.equal(new Set(s.ach.claimed).size, s.ach.claimed.length);      // and nothing was claimed twice
+  for (const a of ready) assert.equal(claimAch(s, a.id), null);         // a second pass pays nothing
+});

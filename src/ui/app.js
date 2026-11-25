@@ -1,6 +1,6 @@
 // Screens and game flow. Rules live in engine/, numbers in config/, ads in services/, juice in fx/.
 import {LOCATIONS, TIERS, KEEP_TIER, ARSENAL_MAX, COMBO, HEAT, OVERDRIVE, MAX_LOCKS, UPGRADES, CONTAINERS, LEAGUES, ARENA, CONTRACTS, ROMAN, GYRO} from '../config/gameData.js';
-import {minBet, betFor, spinIndex, sectorOf, makeCharge, chargeSplit, odds} from '../engine/gyro.js';
+import {minBet, betFor, spinIndex, sectorOf, prizeOf, odds} from '../engine/gyro.js';
 import {createGyroWheel, nearJackpot} from './gyroWheel.js';
 import {MINI, MINI_CFG, miniFee, miniPrize, rivalSkill, rivalReactionMs, reactWin, rivalTaps, tugPos, tugWin, aimScore, rivalAim, aimPos} from '../engine/minigames.js';
 import {bgUrl, preloadBackdrops} from './locationArt.js';
@@ -15,11 +15,12 @@ import {leagueOf, squad, squadPower, tapPower, makeOpponent, opponentFromPlayer,
 import {showRewarded, showInterstitial, PLACEMENTS, log as adLog, setTestDuration, onAdPause, initPlatform, pushPlatformSave} from '../services/adBridge.js';
 import {ONLINE, syncProfile, fetchTop, fetchOpponent, renameOnline, nickname} from '../services/online.js';
 import {sfx, setMuted, setPaused} from '../fx/audio.js';
-import {initParticles, burst, shake, vibrate} from '../fx/particles.js';
+import {initParticles, burst, shake, vibrate, floatNum, screenSlice} from '../fx/particles.js';
 import {load, save, newContract, fresh} from './state.js';
 import {icon} from './icons.js';
 import {createForgeStage, stageLevel, inZone, IMPACT_DELAY} from './forgeStage.js';
 import {createDuelStage} from './duelStage.js';
+import {playCaseOpen} from './caseOpen.js';
 import {weaponThumb} from './weaponArt.js';
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -70,6 +71,11 @@ function hud() {
   $('[data-tab="quests"]').classList.toggle('has-dot', S.contracts.some(c => c.p >= c.n) || readyToClaim(S).length > 0);
 }
 function addCredits(n) { S.credits += n; S.stats.credits += n; progress('credits', n); }
+/** Pays one achievement reward into the save. The permanent perks live in S.ach.claimed, so bonuses() picks them up. */
+function payReward(r) {
+  if (r.credits) addCredits(r.credits);
+  if (r.box) S.boxes[r.box]++;
+}
 function progress(k, add, isMax = false) {
   for (const c of S.contracts) if (c.k === k && c.p < c.n) c.p = Math.min(c.n, isMax ? Math.max(c.p, add) : c.p + add);
 }
@@ -155,9 +161,12 @@ const SLOT_ICONS = {el: 'bolt', wp: 'swords', pk: 'target', idx: 'medal'};
 function renderHudCenter() {
   const el = $('#hudCenter');
   if (!el) return;
-  const L = curLoc(), strip = rt.tab === 'forge' ? `<div class="locs" role="group" aria-label="Локации">${LOCATIONS.filter(l => S.unlocked.includes(l.id) || l === LOCATIONS.find(x => !S.unlocked.includes(x.id))).map(l => S.unlocked.includes(l.id)
+  // The location plate and strip belong to the forge. Off that tab the HUD is only the logo, the two
+  // counters and mute, which is what lets it fit the 520 px column without the plate riding over the pills.
+  if (rt.tab !== 'forge') { el.innerHTML = ''; return; }
+  const L = curLoc(), strip = `<div class="locs" role="group" aria-label="Локации">${LOCATIONS.filter(l => S.unlocked.includes(l.id) || l === LOCATIONS.find(x => !S.unlocked.includes(x.id))).map(l => S.unlocked.includes(l.id)
       ? `<button class="chip ${l.id === S.loc ? 'on' : ''}" style="--h:${l.hue}" data-act="loc" data-id="${l.id}" aria-pressed="${l.id === S.loc}">${l.name} <small class="num">×${l.mult}</small></button>`
-      : `<button class="chip locked" data-act="tab" data-id="shop">${icon('lock')}${l.name} <small class="num">${fmt(l.cost)}</small></button>`).join('')}</div>` : '';
+      : `<button class="chip locked" data-act="tab" data-id="shop">${icon('lock')}${l.name} <small class="num">${fmt(l.cost)}</small></button>`).join('')}</div>`;
   el.innerHTML = `<div class="plate"><small>CYBER FORGE: ARENA</small><b>${L.name}</b></div>${strip}`;
   const bar = el.querySelector('.locs'), on = bar?.querySelector('.on');
   if (on) bar.scrollLeft = on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2;   // the current location sits in the middle
@@ -185,7 +194,7 @@ function renderForge() {
         <span id="heatTxt" class="num"></span>
       </div>
       <div class="console-mid">
-        <div class="forge-dock"><button class="forgebtn ${S.tut === 0 ? 'tut-pulse' : ''}" id="forgeBtn">КОВАТЬ</button><span class="gyro-badge" id="gyroBadge" hidden></span></div>
+        <div class="forge-dock"><button class="forgebtn ${S.tut === 0 ? 'tut-pulse' : ''}" id="forgeBtn">КОВАТЬ</button></div>
         <div class="meter combo"><i id="comboFill"></i><span id="comboTxt" class="num"></span></div>
       </div>
     </div>
@@ -217,6 +226,7 @@ function renderForge() {
   const btn = $('#forgeBtn');
   btn.addEventListener('pointerdown', e => { e.preventDefault(); forgeTap('tap'); });   // no 300 ms click delay
   btn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); forgeTap('tap'); } });
+  $('#forgeStage').addEventListener('pointerdown', pokeWeapon);         // easter egg: the artifact on the anvil answers a tap
   rt.stage?.stop();
   rt.stage = createForgeStage($('#forgeStage'), {onImpact: p => sfx.impact(p)});
   rt.stage.setScene(sceneOpts());
@@ -225,6 +235,14 @@ function renderForge() {
   rt.wheel = createGyroWheel($('#gyroWheel'), {onTick: () => sfx.tick()});
   if (rt.cur) { SLOTS.forEach(s => paintSlot(s, rt.cur.a[s], false)); announce(rt.cur.e, null, rt.cur.id, 'quiet'); }
   updateForgeControls();
+}
+
+/** Easter egg: a tap straight on the artifact rings it, spins it and throws sparks. Never during a reveal or the quench. */
+function pokeWeapon() {
+  if (!rt.cur || rt.spin || rt.temper || !rt.stage) return;
+  rt.stage.poke();
+  sfx.tick(); sfx.fanfare(1); vibrate(12);
+  burst($('#forgeStage'), 18, [TIERS[rt.cur.e.tier].c, '#ffffff']);
 }
 
 function paintSlot(s, v, spinning) {
@@ -271,7 +289,12 @@ function spinSlots(a, slots, dur, done, {stops, riser = false, locked = false} =
 function forgeTap(kind = 'tap') {
   if (rt.duel || $('.ad-modal')) return;
   const now = performance.now();
-  if (rt.temper) { if (kind === 'tap') endTemper(temperPos()); return; }   // during tempering the forge button tempers
+  if (rt.temper) {                                                   // during tempering the forge button tempers
+    if (kind !== 'tap') return;
+    if (now < rt.temper.guardUntil) { rt.lastTap = now; return; }     // inertia from combo tapping must not throw the quench away
+    endTemper(temperPos());
+    return;
+  }
   if (rt.spin) {
     if (kind !== 'tap') return;
     if (rt.spin.locked) { rt.lastTap = now; return; }                // big reveals play out; taps keep the combo alive
@@ -352,7 +375,9 @@ function achHtml() {
   const all = achStatus(S), b = bonuses(S), reward = a => a.reward.credits ? `<span class="num">+${fmt(a.reward.credits)}</span>`
     : a.reward.box ? `Контейнер «${CONTAINERS.find(c => c.id === a.reward.box).n}»`
     : a.reward.craft ? `+${Math.round(a.reward.craft * 100)}% мощь крафта` : `+${Math.round(a.reward.arena * 100)}% награды Арены`;
-  return `<div class="card bonus-card"><div class="row"><div class="grow"><div class="label">Мощь крафта</div><b class="num big">+${Math.round(b.craft * 100)}%</b></div>
+  const ready = all.filter(a => a.ready && !a.claimed), pot = ready.reduce((t, a) => t + (a.reward.credits ?? 0), 0);
+  return `${ready.length ? `<button class="btn claim-all" data-act="claimAll">Забрать всё${pot ? ` (+${fmt(pot)} ⚡)` : ''} · ${ready.length}</button>` : ''}
+    <div class="card bonus-card"><div class="row"><div class="grow"><div class="label">Мощь крафта</div><b class="num big">+${Math.round(b.craft * 100)}%</b></div>
       <div class="grow"><div class="label">Награды Арены</div><b class="num big">+${Math.round(b.arena * 100)}%</b></div></div>
       <p class="small">Каждые 10 находок в Витрине дают +5% к мощи новых артефактов.</p></div>
     ${ACH_CATS.map(c => `<h2>${c.n}</h2><div class="ach-list">${all.filter(a => a.cat === c.id).map(a => `
@@ -389,18 +414,10 @@ function onForged({a, e}, kind, od) {
   progress('forges', 1);
   if (e.tier >= KEEP_TIER) progress('rare', 1);
   if (e.tags.some(t => t.id === 'mirror')) progress('mirror', 1);
-  let gain = 0, ch = null;
+  let gain = 0;
   if (!container) {
-    let earned = forgeCredits(e.score, {locMult: locById(a.loc).mult, multLvl: S.up.mult, combo, overdrive: od}), payout = 0;
-    if (kind === 'tap' && S.gyro.charge) {                            // Гиро-Реактор charge: only a manual forge spends it
-      ch = S.gyro.charge; S.gyro.charge = null;
-      ({earned, payout} = chargeSplit(earned, ch));
-      S.gyro.returned += payout;
-    }
-    addCredits(earned);                                               // counts for stats and the «Заработай» contract
-    S.credits += payout;                                              // the stake coming back is not "earned"
-    gain = earned + payout;                                           // the one number for the verdict and the toast = the balance change
-    if (ch && !od && GYRO.heat[ch.m]) rt.heat = Math.min(HEAT.max, rt.heat + GYRO.heat[ch.m]);
+    gain = forgeCredits(e.score, {locMult: locById(a.loc).mult, multLvl: S.up.mult, combo, overdrive: od});
+    addCredits(gain);                                                 // counts for stats and the «Заработай» contract
   }
   const id = container || e.tier >= KEEP_TIER ? storeArtifact(a, e) : null;
   rt.cur = {a, e, id};
@@ -409,11 +426,7 @@ function onForged({a, e}, kind, od) {
   if (kind === 'tap' && e.tier >= KEEP_TIER) rt.lastTap = performance.now();   // a long reveal must not break the combo
   announce(e, gain, id, kind === 'auto' ? 'auto' : 'loud');
   stageReveal(rt.cur, kind);
-  if (ch) {
-    toast(`Гиро-заряд ×${ch.m}: +${fmt(gain)}`); sfx.coin();
-    if (ch.m >= 5) { rt.stage?.pillar('#ff3366'); rt.stage?.shockwave('#ff3366'); burst($('#forgeBtn'), 90, ['#ff3366', '#ffffff', '#ffcc33']); shake($('#screen'), true); }
-    else if (ch.m >= 3) rt.stage?.shockwave(GYRO.sectors.find(s => s.m === ch.m).c);
-  }
+  if (gain && kind !== 'auto') floatNum($('#anvil'), `+${fmt(gain)} ⚡`, combo >= 1.5 ? 'crit' : '');
   persist(); hud(); updateForgeControls();
   if (kind !== 'auto' && id != null && e.tier >= KEEP_TIER) startTemper();
 }
@@ -429,6 +442,8 @@ function stageReveal(cur, kind) {
   const c = TIERS[cur.e.tier].c;
   if (cur.e.tier >= KEEP_TIER) st.shockwave(c);
   if (cur.e.tier >= 4) { st.pillar(c); st.shatter(c); sfx.crack(); }
+  // Мифический or a 777 index is the rarest thing the forge can produce: cut the screen and stretch the moment.
+  if (cur.e.tier >= 5 || cur.e.tags.some(x => x.id === 'j777')) { screenSlice(c); st.slowmo(360, 0.25); sfx.crack(); }
 }
 
 function announce(e, gain, id, mode) {
@@ -474,77 +489,112 @@ function renderDexLink() {
   b.innerHTML = `${icon('box')}<span>Витрина</span><b class="num">${p.found}/${p.total}</b>`;
   b.setAttribute('aria-label', `Каталог находок: ${p.found} из ${p.total}`);
   const mini = $('#gyroMini');
-  if (mini) mini.textContent = S.gyro.charge ? `×${S.gyro.charge.m}` : rt.wheel?.spinning ? '…' : '';
+  if (mini) mini.textContent = rt.wheel?.spinning ? '…' : '';
 }
 
-/* ---------- Гиро-Реактор: stake credits, spin the wheel, the result charges the next manual forge ---------- */
+/* ---------- Гиро-Реактор: stake credits, spin the wheel, the prize is paid out inside the drawer ---------- */
 
 const GYRO_ODDS = odds().map(o => ({...o, p: Math.round(o.p)}));
 
+/** The prize card shown in the drawer the moment the arrow stops. */
+function prizeCard(p) {
+  const gain = p.credits ? `<b class="num">+${fmt(p.credits)}</b>`
+    : p.box ? `<b>Контейнер «${CONTAINERS.find(c => c.id === p.box).n}»</b>`
+    : p.od ? '<b>12 секунд ×3</b>' : '<b>—</b>';
+  return `<div class="gyro-prize ${p.kind}" style="--gc:${p.c}" role="status">
+      <div class="gyro-prize-n">${p.n}</div>${gain}
+      ${p.heat ? `<small>Реактор +${p.heat}%</small>` : ''}
+      ${p.doubled ? '<small>Удвоено рекламой ✓</small>' : ''}
+    </div>`;
+}
+
 function renderGyro() {
-  const body = $('#gyroBody'), badge = $('#gyroBadge');
+  const body = $('#gyroBody');
   if (!body) return;
-  const ch = S.gyro.charge, spinning = !!rt.wheel?.spinning, mult = curLoc().mult, stake = betFor(S.credits, rt.gyroShare, mult);
-  badge.hidden = !ch;
-  if (ch) {
-    badge.style.setProperty('--gc', GYRO.sectors.find(s => s.m === ch.m).c);
-    badge.innerHTML = `${icon('bolt')}Заряд ×${ch.m} <span class="num">+${fmt(ch.payout)}</span>`;
-  }
+  const p = rt.gyroPrize, spinning = !!rt.wheel?.spinning, mult = curLoc().mult, stake = betFor(S.credits, rt.gyroShare, mult);
   let action;
   if (spinning) action = '<div class="gyro-status">Реактор раскручивается…</div>';
-  else if (ch) action = `<div class="gyro-status">Заряд ×${ch.m} ждёт ковку: вернётся <b class="num">${fmt(ch.payout)}</b>${ch.m >= 2 ? `, кредиты ковки ×${ch.m}` : ''}${GYRO.heat[ch.m] ? ', реактор +' + GYRO.heat[ch.m] + '%' : ''}. Жми КОВАТЬ.</div>
-      ${ch.m < 1 && !ch.respun ? `<button class="btn ad" data-act="gyroAd" ${rt.gyroAdBusy ? 'disabled' : ''}>${icon('play')}Повторный спин (реклама)</button>` : ''}`;
+  else if (p) action = `${prizeCard(p)}
+      <div class="gyro-again">
+        ${stake ? `<button class="btn" data-act="gyroSpin">Крутить ещё · <span class="num">${fmt(stake)}</span></button>`
+                : `<button class="btn ad" data-act="gyroAd" ${rt.gyroAdBusy ? 'disabled' : ''}>${icon('play')}Крутить ещё (реклама)</button>`}
+        ${p.credits && !p.doubled ? `<button class="btn ad" data-act="gyroDouble" ${rt.gyroAdBusy ? 'disabled' : ''}>${icon('play')}×2 за рекламу</button>` : ''}
+      </div>`;
   else if (!stake) action = `<div class="gyro-status">Ставка от <b class="num">${fmt(minBet(mult))}</b> кредитов. Куй дальше или запусти спин за рекламу.</div>
       <button class="btn ad" data-act="gyroAd" ${rt.gyroAdBusy ? 'disabled' : ''}>${icon('play')}Аварийный спин (реклама)</button>`;
   else action = `<button class="btn" data-act="gyroSpin">Спин · <span class="num">${fmt(stake)}</span></button>`;
-  body.innerHTML = `<div class="gyro-head">ГИРО-РЕАКТОР</div>
-    <div class="gyro-bets" role="group" aria-label="Размер ставки">${GYRO.shares.map(s =>
-      `<button class="chip ${s === rt.gyroShare ? 'on' : ''}" data-act="gyroBet" data-id="${s}" aria-pressed="${s === rt.gyroShare}" ${ch || spinning ? 'disabled' : ''}>${s * 100}%</button>`).join('')}</div>
+  body.innerHTML = `<div class="gyro-bets" role="group" aria-label="Размер ставки">${GYRO.shares.map(s =>
+      `<button class="chip ${s === rt.gyroShare ? 'on' : ''}" data-act="gyroBet" data-id="${s}" aria-pressed="${s === rt.gyroShare}" ${spinning ? 'disabled' : ''}>${s * 100}%</button>`).join('')}</div>
     ${action}`;
 }
 
-/** paid = false: the spin was funded by an ad (respin after Сбой, or the rescue spin). */
-function gyroSpin(stake, paid = true, respun = false) {
-  if (!rt.wheel || rt.wheel.spinning || S.gyro.charge || rt.duel || !stake) return;
+/** Everything the spin won lands in the balance right here, before the player closes the drawer. */
+function settlePrize(p, stake) {
+  if (p.credits) { S.credits += p.credits; S.gyro.returned += p.credits; }   // the stake coming back is not "earned"
+  if (p.box) S.boxes[p.box]++;
+  if (p.heat && !isOD()) rt.heat = Math.min(HEAT.max, rt.heat + p.heat);
+  S.gyro.best = Math.max(S.gyro.best, p.m);
+  if (p.m >= 2.5) S.gyro.hits3++;
+  if (p.m >= 7) S.gyro.hits5++;
+  rt.gyroPrize = {...p, stake};
+  persist(); hud();
+  const el = $('#gyroWheel');
+  if (p.credits) floatNum(el, `+${fmt(p.credits)} ⚡`, p.m >= 7 ? 'crit' : '');
+  if (p.od) startOverdrive();                                              // persists and refreshes the controls itself
+  if (p.kind === 'credits' && p.m < 1) { sfx.temperFail(); burst(el, 16, ['#6b7a99', '#00f0ff', '#ffffff']); }
+  else { sfx.fanfare(Math.min(5, Math.round(p.m) + 2)); vibrate(p.m >= 2.5 ? [40, 30, 90] : 25); }
+  if (p.kind === 'jackpot') { burst(el, 140, ['#ff3366', '#ffcc33', '#ffffff', '#00f0ff']); $('#gyro')?.classList.add('flash'); shake($('#screen'), true); screenSlice('#ff3366'); }
+  else if (p.m >= 2.5 || p.box) burst(el, 50, [p.c, '#ffffff']);
+  if (p.box) toast(`Бесплатный кейс «${CONTAINERS.find(c => c.id === p.box).n}» — открой его в Магазине`);
+}
+
+/** paid = false: the spin was funded by an ad (the rescue spin, or «крутить ещё» without credits). */
+function gyroSpin(stake, paid = true) {
+  if (!rt.wheel || rt.wheel.spinning || rt.duel || !stake) return;
   if (paid) {
     if (S.credits < stake) { toast('Не хватает кредитов'); return; }
     S.credits -= stake; S.gyro.wagered += stake;
   }
   S.gyro.spins++;
+  rt.gyroPrize = null;
   const i = rt.forceGyro ?? spinIndex(), sec = sectorOf(i);
   rt.forceGyro = null;
   persist(); hud();
   $('#gyro')?.classList.remove('flash');
   rt.wheel.spinTo(i, REDUCED ? 0 : GYRO.spinMs, () => {            // also runs at once if the player leaves the forge mid-spin
-    S.gyro.charge = {...makeCharge(stake, sec.m), respun};
-    S.gyro.best = Math.max(S.gyro.best, sec.m);
-    if (sec.m === 3) S.gyro.hits3++;
-    if (sec.m === 5) S.gyro.hits5++;
-    persist();
-    const el = $('#gyroWheel');
-    if (sec.m < 1) { sfx.temperFail(); burst(el, 16, ['#6b7a99', '#00f0ff', '#ffffff']); if (nearJackpot(i)) toast('Чуть-чуть до ×5!'); }
-    else { sfx.fanfare(Math.min(5, GYRO.sectors.indexOf(sec) + 1)); vibrate(sec.m >= 3 ? [40, 30, 90] : 25); }
-    if (sec.m >= 5) { burst(el, 140, ['#ff3366', '#ffcc33', '#ffffff', '#00f0ff']); $('#gyro')?.classList.add('flash'); shake($('#screen'), true); }
-    else if (sec.m >= 3) burst(el, 50, [sec.c, '#ffffff']);
+    settlePrize(prizeOf(sec, stake, curLoc().mult), stake);
+    if (sec.kind !== 'jackpot' && nearJackpot(i)) toast('Чуть-чуть до ДЖЕКПОТА ×7!');
     renderGyro();
   });
   renderGyro();
 }
 
+/** The ad button: a rescue spin for a player who can't afford a stake. */
 async function gyroAd() {
   if (rt.gyroAdBusy || !rt.wheel || rt.wheel.spinning || rt.duel) return;
-  const ch = S.gyro.charge, respin = !!ch && ch.m < 1 && !ch.respun;
-  if (ch && !respin) return;
-  if (!ch && betFor(S.credits, rt.gyroShare, curLoc().mult)) return;    // the rescue spin is only for a player who can't afford a stake
-  const stake = respin ? ch.stake : minBet(curLoc().mult);
+  if (betFor(S.credits, rt.gyroShare, curLoc().mult)) return;           // only for a player who can't afford a stake
   rt.gyroAdBusy = true; renderGyro();
   let ok = false;
   try { ok = await showRewarded(PLACEMENTS.GYRO); }                   // never throws; false on close, error or a busy ad layer
   finally { rt.gyroAdBusy = false; }
   if (!ok) { toast('Реклама не досмотрена: спина нет'); renderGyro(); return; }
-  if (respin && S.gyro.charge === ch) S.gyro.charge = null;            // the Сбой result is replaced by the new spin
-  if (S.gyro.charge) { renderGyro(); return; }
-  gyroSpin(stake, false, respin);
+  gyroSpin(minBet(curLoc().mult), false);
+}
+
+/** ×2 on the credits just won, funded by an ad. Once per prize. */
+async function gyroDouble() {
+  const p = rt.gyroPrize;
+  if (rt.gyroAdBusy || !p?.credits || p.doubled || rt.wheel?.spinning) return;
+  rt.gyroAdBusy = true; renderGyro();
+  let ok = false;
+  try { ok = await showRewarded(PLACEMENTS.GYRO); }
+  finally { rt.gyroAdBusy = false; }
+  if (!ok) { toast('Реклама не досмотрена: награда не удвоена'); renderGyro(); return; }
+  if (rt.gyroPrize !== p) { renderGyro(); return; }                   // the player span again while the ad played
+  S.credits += p.credits; S.gyro.returned += p.credits;
+  rt.gyroPrize = {...p, doubled: true};
+  sfx.coin(); floatNum($('#gyroWheel'), `+${fmt(p.credits)} ⚡`);
+  toast('Награда удвоена!'); persist(); hud(); renderGyro();
 }
 
 function toggleLock(s) {
@@ -599,19 +649,26 @@ function startOverdrive() {
 /* ---------- Perfect Temper mini-game: Rare+ only, 1.4 s, hit the gold zone for +25% power ---------- */
 
 const TEMPER_MS = 1400;
+// The bar appears mid-combo, so the first 320 ms are a telegraph: a gold flash plays, the marker holds at 0
+// and taps are swallowed (they still feed the combo). Without it fast tapping always skipped the quench.
+const TEMPER_LEAD = 320;
 function startTemper() {
   const el = $('#temper');
   if (!el || !rt.cur || rt.cur.id == null || rt.cur.tempered) return;
   const zone = {from: 0.38 + Math.random() * 0.34, width: 0.16};
-  rt.temper = {t0: performance.now(), zone};
+  const lead = REDUCED ? 0 : TEMPER_LEAD, now = performance.now();
+  rt.temper = {t0: now + lead, guardUntil: now + lead, zone};
   rt.cur.canRetry = false;
   el.hidden = false;
   el.querySelector('.zone').style.cssText = `left:${zone.from * 100}%;width:${zone.width * 100}%`;
+  el.classList.remove('lead'); void el.offsetWidth;
+  if (lead) { el.classList.add('lead'); setTimeout(() => el.classList.remove('lead'), lead); }
   const b = $('#forgeBtn'); b.textContent = 'ЗАКАЛИТЬ!'; b.classList.add('temper-mode');
   $('#temperTxt').textContent = S.tut === 2 ? 'Жми ЗАКАЛИТЬ, когда белая черта в золотой зоне: +25% мощи' : 'Жми в золотой зоне!';
+  if (lead) sfx.riser(0.5);
   updateForgeControls();                                              // re-forge buttons are off while tempering
 }
-const temperPos = () => Math.min(1, (performance.now() - rt.temper.t0) / TEMPER_MS);
+const temperPos = () => Math.min(1, Math.max(0, (performance.now() - rt.temper.t0) / TEMPER_MS));
 
 /** pos: marker position when pressed, or null when time ran out. quiet: the player left the forge. */
 function endTemper(pos, quiet = false) {
@@ -691,8 +748,10 @@ function startDuel() {
   ensureBots();
   const real = rt.nextOpp && Date.now() - rt.nextOpp.at < 120000 ? rt.nextOpp.p : null;   // a real player from /api/arena, else a bot
   rt.nextOpp = null;
-  rt.duel = {opp: real ? opponentFromPlayer(real) : makeOpponent(S.trophies, S.bots), player: squadPower(S.arsenal), t0: performance.now(), done: false, result: null, doubled: false,
-             mine: squad(S.arsenal)[0] ?? forge(S.loc), theirs: real?.squad?.[0] ?? forge(S.loc)};
+  rt.duel = {opp: real ? opponentFromPlayer(real) : makeOpponent(S.trophies, S.bots), player: squadPower(S.arsenal), done: false, result: null, doubled: false,
+             mine: squad(S.arsenal)[0] ?? forge(S.loc), theirs: real?.squad?.[0] ?? forge(S.loc),
+             el: 0, lastReal: 0, speed: rt.duelSpeed ?? 1, exchanged: 0, oppRaw: null, oppOffset: 0, shieldUntil: -1, reflected: 0, reflectAcc: 0,
+             cd: Object.fromEntries(ARENA.abilities.map(a => [a.id, 0]))};
   renderDuel();
 }
 
@@ -705,18 +764,62 @@ function renderDuel() {
       <div class="fighter opp"><div class="f-head"><b class="num" id="dOpp">0</b><span id="oppName"></span></div><div class="bar"><i id="barOpp"></i></div></div>
     </div>
     <canvas id="duelScene" class="duel-scene" aria-hidden="true"></canvas>
-    <button class="forgebtn fight" id="duelBtn">КОВАТЬ В БОЮ!</button>
-    <p class="small center">Отряд дал стартовую мощь. Тапай как можно быстрее!</p>
+    <div class="duel-bar">
+      <div class="duel-abilities" role="group" aria-label="Умения">${ARENA.abilities.map((a, i) =>
+        `<button class="ability" id="ab-${a.id}" data-act="duelAbility" data-id="${i}" style="--cd:0">
+           <span class="ability-ic" aria-hidden="true">${a.ic}</span><b>${a.n}</b><small class="num" id="cd-${a.id}">ГОТОВО</small></button>`).join('')}</div>
+      <div class="duel-speed" role="group" aria-label="Скорость боя">${ARENA.speeds.map(s =>
+        `<button class="chip ${s === d.speed ? 'on' : ''}" data-act="duelSpeed" data-id="${s}" aria-pressed="${s === d.speed}">×${s}</button>`).join('')}</div>
+    </div>
+    <p class="small center">Клинки бьются сами. Твоё дело — умения: ⚡ урон, 🛡️ отражает атаку, 🔥 ульта.</p>
   </section>`;
-  $('#duelBtn').addEventListener('pointerdown', e => { e.preventDefault(); duelTap(); });
   rt.duelStage?.stop();
   $('#oppName').textContent = d.opp.real ? `${d.opp.name} · игрок` : d.opp.name;   // another player's nickname: text only
   rt.duelStage = createDuelStage($('#duelScene'), d.mine, d.theirs);
   rt.duelStage.start();
 }
 
+/** Cooldown rings and labels. Called every frame: touches style only, never re-renders the duel. */
+function duelControls() {
+  const d = rt.duel;
+  for (const a of ARENA.abilities) {
+    const b = $('#ab-' + a.id), lab = $('#cd-' + a.id);
+    if (!b) continue;
+    const left = Math.max(0, d.cd[a.id] - d.el), ready = left <= 0;
+    b.style.setProperty('--cd', (left / a.cd).toFixed(3));
+    b.classList.toggle('ready', ready);
+    b.classList.toggle('active', a.id === 'shield' && d.el < d.shieldUntil);
+    if (lab) lab.textContent = ready ? 'ГОТОВО' : `${(left / 1000).toFixed(1)} с`;
+  }
+}
+
 function duelFrame(now) {
-  const d = rt.duel, p = Math.min(1, (now - d.t0) / ARENA.duelMs), opp = opponentAt(d.opp, p);
+  const d = rt.duel;
+  const real = d.lastReal ? Math.min(100, now - d.lastReal) : 0;        // a backgrounded tab must not dump seconds into one frame
+  d.lastReal = now;
+  d.el = Math.min(ARENA.duelMs, d.el + real * d.speed);
+  const p = d.el / ARENA.duelMs;
+
+  const step = 1000 / ARENA.autoPerSec, tp = tapPower(S.up.strike);     // the blades trade blows on their own
+  while ((d.exchanged + 1) * step <= d.el) {
+    d.exchanged++;
+    d.player += tp;
+    rt.duelStage?.hit(d.exchanged % 3 === 2 && d.el >= d.shieldUntil ? -1 : 1);   // every third blow is the rival's, unless the shield is up
+    sfx.hit();
+  }
+
+  const raw = opponentAt(d.opp, p), gain = Math.max(0, raw - (d.oppRaw ?? raw));
+  d.oppRaw = raw;
+  if (d.el < d.shieldUntil && gain > 0) {                               // the shield eats the rival's advance and throws part of it back
+    d.oppOffset += gain;
+    // The fraction is carried between frames: rounding each frame's sliver on its own would round
+    // a 0.6 share up to a full point every time and quietly make the shield a 100% reflect.
+    d.reflectAcc += gain * ARENA.abilities.find(a => a.id === 'shield').reflect;
+    const whole = Math.floor(d.reflectAcc);
+    if (whole > 0) { d.reflectAcc -= whole; d.player += whole; d.reflected += whole; }
+  }
+  const opp = Math.max(0, raw - d.oppOffset);
+
   const bar = $('#barMe');
   if (bar) {
     const scale = Math.max(d.opp.total * 1.15, d.player, opp);
@@ -725,17 +828,34 @@ function duelFrame(now) {
     $('#dMe').textContent = fmt(d.player); $('#dOpp').textContent = fmt(opp);
     $('#dTimer').textContent = ((1 - p) * ARENA.duelMs / 1000).toFixed(1);
     $('.fighter.me').classList.toggle('lead', d.player >= opp);
+    $('.view.duel')?.classList.toggle('shielded', d.el < d.shieldUntil);
     rt.duelStage?.setRatio(d.player / (d.player + opp || 1));
+    duelControls();
   }
   if (p >= 1) finishDuel();
 }
 
-function duelTap() {
-  const d = rt.duel;
-  if (!d || d.done) return;
-  d.player += tapPower(S.up.strike);
-  sfx.hit(); vibrate(6); rt.duelStage?.hit();
-  const b = $('#duelBtn'); b?.classList.remove('punch'); void b?.offsetWidth; b?.classList.add('punch');
+/** One of the three tactical abilities. Cooldowns run on duel time, so ×2 speed cools them down twice as fast too. */
+function duelAbility(idx) {
+  const d = rt.duel, ab = ARENA.abilities[+idx];
+  if (!d || d.done || !ab || d.el < d.cd[ab.id]) return;
+  d.cd[ab.id] = d.el + ab.cd;
+  const scene = $('#duelScene');
+  if (ab.id === 'shield') {
+    d.shieldUntil = d.el + ab.ms;
+    rt.duelStage?.guard(ab.ms / d.speed);
+    sfx.lock(); floatNum(scene, 'ЩИТ'); vibrate(18);
+  } else {
+    const dmg = tapPower(S.up.strike) * ab.mult, ult = ab.id === 'ult';
+    d.player += dmg;
+    rt.duelStage?.hit(1, ult ? 2.4 : 1.4);
+    floatNum(scene, `${fmt(dmg)}${ult ? ' КРИТ!' : ''}`, ult ? 'crit' : '');
+    if (ult) { sfx.siren(); shake($('#screen'), true); burst(scene, 90, ['#ff3366', '#ffcc33', '#ffffff']); screenSlice('#ff3366'); vibrate([60, 40, 120]); }
+    else { sfx.impact(1.4); vibrate(22); }
+  }
+  const b = $('#ab-' + ab.id);
+  b?.classList.remove('punch'); void b?.offsetWidth; b?.classList.add('punch');
+  duelControls();
 }
 
 function finishDuel() {
@@ -764,6 +884,7 @@ function renderResult() {
       <div class="row"><span class="grow">Кубки</span><b class="num">${o.dTrophies >= 0 ? '+' : ''}${o.dTrophies}</b></div>
       <div class="row"><span class="grow">Кредиты</span><b class="num">+${fmt(o.credits)}</b></div>
       ${o.win && S.streak > 1 ? `<div class="row"><span class="grow">Серия побед</span><b class="num">${S.streak}</b></div>` : ''}
+      ${d.reflected ? `<div class="row"><span class="grow">Отражено щитом</span><b class="num">${fmt(d.reflected)}</b></div>` : ''}
     </div>
     ${o.win && !d.doubled ? `<button class="btn ad wide" data-act="double">${icon('play')}×2 кредиты и +${ARENA.adBonusTrophies} кубков</button>` : ''}
     ${d.doubled ? '<p class="small center">Награда удвоена ✓</p>' : ''}
@@ -987,7 +1108,7 @@ function renderShop() {
 
 async function openContainer(id) {
   const c = CONTAINERS.find(x => x.id === id);
-  if (!c || rt.spin || rt.duel) return;
+  if (!c || rt.spin || rt.duel || rt.caseBusy) return;
   if (c.ad) {
     if (smugglerLeft()) return;
     if (!(await showRewarded(PLACEMENTS.CONTAINER))) return;
@@ -997,7 +1118,17 @@ async function openContainer(id) {
     if (S.credits < c.cost) { toast('Не хватает кредитов'); return; }
     S.credits -= c.cost;
   }
-  persist(); hud(); show('forge'); forgeTap(c);
+  persist(); hud();
+  // The artifact is rolled up front so the opening show can light itself in the right rarity colour;
+  // forgeTap then reveals exactly that roll through rt.forceNext.
+  const r = bestOf(S.loc, c.tries);
+  rt.caseBusy = true;
+  try {
+    sfx.riser(0.3);
+    await playCaseOpen({color: TIERS[r.e.tier].c, name: c.n.toUpperCase(), onSpark: () => { sfx.crack(); vibrate(14); }});
+  } finally { rt.caseBusy = false; }
+  rt.forceNext = r;
+  show('forge'); forgeTap(c);
 }
 
 /* ---------- quests ---------- */
@@ -1055,13 +1186,25 @@ const ACTIONS = {
   },
   gyroOpen: () => { const d = $('#gyroDrawer'); if (!d) return; d.hidden = false; rt.wheel?.resize(); renderGyro(); d.querySelector('[data-act="gyroClose"]')?.focus(); },
   gyroClose: () => { const d = $('#gyroDrawer'); if (d) d.hidden = true; $('#gyroOpen')?.focus(); },
-  gyroBet: id => { if (S.gyro.charge || rt.wheel?.spinning) return; rt.gyroShare = +id; sfx.lock(); renderGyro(); },
+  gyroBet: id => { if (rt.wheel?.spinning) return; rt.gyroShare = +id; sfx.lock(); renderGyro(); },
   gyroSpin: () => gyroSpin(betFor(S.credits, rt.gyroShare, curLoc().mult)),
   gyroAd: () => gyroAd(),
+  gyroDouble: () => gyroDouble(),
   arsTab: id => { rt.arsTab = id; renderArsenal(); scrollTo(0, 0); },
   sideTab: id => { rt.sideTab = id === 'contracts' ? 'contracts' : 'ach'; renderSides(); },
   openDex: () => { rt.arsTab = 'dex'; show('arsenal'); },
   duel: () => startDuel(),
+  duelAbility: id => duelAbility(id),
+  duelSpeed: id => {
+    const d = rt.duel;
+    rt.duelSpeed = +id;                                               // remembered for the next duel too
+    if (!d || d.done) return;
+    d.speed = +id; sfx.lock();
+    document.querySelectorAll('.duel-speed .chip').forEach(b => {
+      const on = +b.dataset.id === d.speed;
+      b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+    });
+  },
   mini: id => startMini(id),
   miniAgain: () => { const id = rt.mini?.id; miniStop(); startMini(id); },
   miniExit: () => show('arena'),
@@ -1106,11 +1249,30 @@ const ACTIONS = {
   claimAch: id => {
     const r = claimAch(S, id);
     if (!r) return;
-    if (r.credits) addCredits(r.credits);
-    if (r.box) S.boxes[r.box]++;
+    payReward(r);
     const what = r.credits ? `+${fmt(r.credits)} кредитов` : r.box ? `контейнер «${CONTAINERS.find(c => c.id === r.box).n}» в Магазине`
       : r.craft ? `+${Math.round(r.craft * 100)}% к мощи крафта навсегда` : `+${Math.round(r.arena * 100)}% к наградам Арены навсегда`;
     sfx.fanfare(4); toast(`Награда: ${what}`);
+    persist(); hud(); renderQuests();
+  },
+  claimAll: () => {
+    const ready = readyToClaim(S);
+    if (!ready.length) return;
+    let credits = 0, boxes = 0, perks = 0;
+    for (const a of ready) {
+      const r = claimAch(S, a.id);
+      if (!r) continue;
+      payReward(r);
+      if (r.credits) credits += r.credits;
+      if (r.box) boxes++;
+      if (r.craft || r.arena) perks++;
+    }
+    const parts = [credits ? `+${fmt(credits)} кредитов` : '', boxes ? `контейнеров: ${boxes}` : '', perks ? `бонусов: ${perks}` : ''].filter(Boolean);
+    toast(`Забрано ${ready.length}: ${parts.join(' · ')}`);
+    ready.forEach((_, i) => setTimeout(() => sfx.fanfare(Math.min(5, 2 + i % 3)), i * 110));   // the cascade chime, one per award
+    if (credits) floatNum($('.claim-all') ?? $('#credits'), `+${fmt(credits)} ⚡`, 'crit');
+    burst($('#credits'), 120, ['#ffcc33', '#fff3b0', '#ffffff', '#00f0ff']);
+    vibrate([40, 30, 40, 30, 90]);
     persist(); hud(); renderQuests();
   },
   claim: i => {
@@ -1182,7 +1344,7 @@ export function start() {
     if (e.code !== 'Space' || $('.ad-modal') || $('.auth-modal')) return;   // typing a password must not forge
     if (!(e.target === document.body || e.target.id === 'forgeBtn' || e.target.id === 'duelBtn')) return;
     e.preventDefault();
-    if (rt.duel && !rt.duel.done) duelTap(); else if (rt.tab === 'forge' && !rt.temper) forgeTap('tap');   // Space never hits the temper bar by accident
+    if (rt.duel && !rt.duel.done) duelAbility('0'); else if (rt.tab === 'forge') forgeTap('tap');   // the temper guard window covers the accidental press
   });
   setInterval(() => {
     const b = $('#smugBtn');

@@ -62,22 +62,26 @@ export const OVERDRIVE = {ms: 12000, credits: 3, luck: 2};
 export const REROLL = {base: 6, perLock: 0.6};                           // × location mult
 export const MAX_LOCKS = 2;
 
-// Гиро-Реактор: stake credits, spin, and the result charges the next manual forge.
-// Weights are real odds in %, and the wheel draws every segment to that scale. Expected payout 0.98 × stake.
+// Гиро-Реактор: stake credits, spin, and the prize is paid out at once inside the drawer.
+// Weights are real odds in %, and the wheel draws every segment to that scale.
+// Credit payout averages 0.98 × stake; the two non-credit sectors (кейс, OVERDRIVE) ride on top of that.
 export const GYRO = {
   shares: [0.1, 0.25, 0.5],
   minBet: 20,                                  // × location mult; below it only the ad-funded rescue spin is offered
   spinMs: 2600,
+  boxMinStake: 10,                             // × minBet: under it the кейс sector pays credits instead, so min-bet spam can't farm containers
   sectors: [
-    {m: 0.5, n: 'Сбой', c: '#6b7a99'},
-    {m: 1.5, n: '×1.5', c: '#00f0ff'},
-    {m: 2, n: '×2', c: '#4ade80'},
-    {m: 3, n: '×3', c: '#b06bff'},
-    {m: 5, n: 'Перегрузка ×5', c: '#ff3366'},
+    {m: 0.5, n: '×0.5 Кэшбэк', c: '#6b7a99'},
+    {m: 1.5, n: '×1.5 Кредиты', c: '#00f0ff'},
+    {m: 2.5, n: '×2.5 Кредиты', c: '#4ade80'},
+    {m: 0, kind: 'box', box: 'standard', n: 'Бесплатный Кейс', c: '#b06bff'},
+    {m: 0, kind: 'od', n: 'OVERDRIVE', c: '#ff7a1a'},
+    {m: 7, kind: 'jackpot', n: 'ДЖЕКПОТ ×7', c: '#ff3366'},
   ],
-  // Segments around the wheel (s = sector index, w = % of the wheel). Сбой 64, ×1.5 24, ×2 8, ×3 3, ×5 1.
-  wheel: [{s: 0, w: 16}, {s: 1, w: 12}, {s: 0, w: 16}, {s: 2, w: 8}, {s: 0, w: 16}, {s: 3, w: 3}, {s: 1, w: 12}, {s: 0, w: 16}, {s: 4, w: 1}],
-  heat: {3: 35, 5: 60},                        // extra reactor heat when the charge lands (×3, ×5)
+  // Segments around the wheel (s = sector index, w = % of the wheel).
+  // Кэшбэк 48, ×1.5 28, ×2.5 10, кейс 7, OVERDRIVE 6, джекпот 1 → credit EV = 0.98.
+  wheel: [{s: 0, w: 16}, {s: 1, w: 14}, {s: 0, w: 16}, {s: 2, w: 10}, {s: 3, w: 7}, {s: 0, w: 16}, {s: 1, w: 14}, {s: 4, w: 6}, {s: 5, w: 1}],
+  heat: {2.5: 30, 7: 70},                      // extra reactor heat the big credit prizes also hand over
 };
 
 // Каталог индексов: the evaluate() tags worth collecting, [tag id, label]. Counts live in S.stats.tags.
@@ -111,7 +115,16 @@ export const ARENA = {
   oppBase: 350, oppPerTrophy: 1.4,     // opponent total power at your rating
   oppSpread: 0.12,                     // ±12% randomness
   oppStartShare: 0.5,                  // part of the opponent's total it has at second 0
-  tapBase: 2,                          // power per tap; + strike level
+  tapBase: 2,                          // power per exchange and the unit every ability is priced in; + strike level
+  // The duel fights itself: blades trade blows at this rate, and the player spends the time on the three abilities.
+  // The auto rate alone roughly matches what hammering the old tap button delivered, so abilities are the upside.
+  autoPerSec: 5,
+  speeds: [1, 2],                      // ×1 / ×2 clock: the duel is the same length in game time, shorter in real time
+  abilities: [
+    {id: 'strike', n: 'Удар стихии', ic: '⚡', cd: 2200, mult: 8},
+    {id: 'shield', n: 'Энергощит', ic: '🛡️', cd: 4200, ms: 1200, reflect: 0.6},   // blocks the rival's growth and returns part of it
+    {id: 'ult', n: 'Перегрузка', ic: '🔥', cd: 6500, mult: 25},
+  ],
   win: {trophies: 28, perStreak: 4, maxStreakBonus: 5, credits: 60, creditsPerTrophy: 0.5},
   loss: {trophies: 14, credits: 15},
   adBonusTrophies: 10,

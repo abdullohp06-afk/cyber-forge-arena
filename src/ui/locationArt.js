@@ -403,8 +403,41 @@ export function impactExtra(loc, spray, s, {cx, wy}) {
   if (loc === 'astral') s.flash = 0.7;
 }
 
+/**
+ * OVERDRIVE only: hazard beacons sweep the top corners and the forge vents steam up the sides.
+ * Drawn for every location, so the mode always reads the same way wherever the player is.
+ */
+function overdriveRig(ctx, g) {
+  const {W, H, ay, t} = g;
+  for (const side of [0, 1]) {
+    const x = side ? W - 16 : 16, y = 16, sweep = t * 4 + side * Math.PI;
+    ctx.save();
+    ctx.fillStyle = '#2a3654'; ctx.beginPath(); ctx.roundRect(x - 7, y - 4, 14, 9, 2); ctx.fill();   // the housing
+    ctx.globalCompositeOperation = 'lighter';
+    const lit = 0.35 + 0.65 * Math.max(0, Math.sin(sweep));
+    ctx.fillStyle = `rgba(255,196,26,${lit})`;
+    ctx.beginPath(); ctx.arc(x, y - 1, 4, 0, TAU); ctx.fill();
+    ctx.globalAlpha = lit * 0.3;                                                     // the cone of light it throws
+    ctx.beginPath(); ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(sweep) * 70 - 26, y + 80); ctx.lineTo(x + Math.cos(sweep) * 70 + 26, y + 80);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  ctx.save();                                                                        // steam jets along the floor
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 8; i++) {
+    const x = (i + 0.5) * W / 8, p = ((t * 0.55 + rnd(i) * 1.3) % 1);
+    const y = ay + 10 - p * (H * 0.42), r = 5 + p * 26;
+    ctx.globalAlpha = (1 - p) * 0.22;
+    ctx.fillStyle = '#e6edf6';
+    ctx.beginPath(); ctx.ellipse(x + Math.sin(p * 5 + i) * 10, y, r * 0.8, r, 0, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
 /** After-effects drawn on top: lightning (abyss), sun flare (astral), glitch slices (quantum). */
 export function drawOverlay(ctx, loc, g, s, canvas, dpr) {
+  if (g.od && !g.reduced) overdriveRig(ctx, g);
   if (s.flash > 0.02) {
     if (loc === 'abyss') {
       ctx.strokeStyle = '#e3c8ff'; ctx.lineWidth = 2; ctx.globalAlpha = s.flash; ctx.shadowColor = '#b06bff'; ctx.shadowBlur = 16;

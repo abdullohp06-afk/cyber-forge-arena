@@ -1,13 +1,14 @@
 // Arena clash over the painted arena (public/bg/arena.jpg; a procedural cyber-colosseum until it loads).
-// The player's weapon (left) and the rival's (right) meet above the platform; the clash point slides toward
-// whoever is losing, every tap is a lunge that shoves the rival's blade back, with sparks and a shock ring.
+// The player's weapon (left) and the rival's (right) trade blows on their own above the platform; the clash
+// point slides toward whoever is losing. hit(side) is one lunge — side 1 drives my blade in, -1 the rival's —
+// and guard(ms) raises the energy shield that reflects the next exchanges.
 import {drawWeapon, elementStyle} from './weaponArt.js';
 import {photoLayout} from './locationArt.js';
 
 export function createDuelStage(canvas, mine, theirs) {
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const ctx = canvas.getContext('2d');
-  let fit = null, W = 0, H = 0, raf = 0, running = false, last = 0, t = 0, target = 0.5, shown = 0.5, push = 0, shake = 0, cy = 0, sparks = [], rings = [], hits = 0;
+  let fit = null, W = 0, H = 0, raf = 0, running = false, last = 0, t = 0, target = 0.5, shown = 0.5, push = 0, shake = 0, cy = 0, sparks = [], rings = [], hits = 0, guardUntil = 0;
 
   function resize() {
     const r = canvas.getBoundingClientRect(), d = Math.min(2, devicePixelRatio || 1);
@@ -57,7 +58,8 @@ export function createDuelStage(canvas, mine, theirs) {
     cy = Math.min(floor - 34, H * 0.5);
     const cx = clashX(), base = Math.min(W * 0.5, 230), lunge = push * 10, bob = reduced ? 0 : Math.sin(t * 3) * 2;
     // Each blade reaches 0.85 of its size behind the clash: sized to the room left on its side, both stay fully on screen.
-    const sizeMe = Math.min(base, (cx - 10) / 0.9), sizeOpp = Math.min(base, (W - cx - 10 - lunge) / 0.9);
+    // lunge goes negative when the rival is the one driving forward, so the clamp has to cover both signs.
+    const sizeMe = Math.min(base, (cx - 10 + Math.min(0, lunge)) / 0.9), sizeOpp = Math.min(base, (W - cx - 10 - Math.max(0, lunge)) / 0.9);
     fit = {left: cx - 4 - sizeMe * 0.85, right: cx + 4 + lunge + sizeOpp * 0.85, W};
     ctx.save(); ctx.translate(cx - 4 + lunge * 0.4, cy + bob); ctx.rotate(-0.14 - push * 0.12);      // my blade drives forward
     drawWeapon(ctx, mine, -sizeMe * 0.35, 0, sizeMe, {t, heat: push * 0.7}); ctx.restore();
@@ -79,6 +81,15 @@ export function createDuelStage(canvas, mine, theirs) {
       ctx.globalAlpha = Math.min(1, p.life / 20); ctx.strokeStyle = p.c;
       ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 1.5, p.y - p.vy * 1.5); ctx.stroke();
     }
+    if (performance.now() < guardUntil) {                                  // energy shield: a hex dome in front of my blade
+      const r = 46 + Math.sin(t * 18) * 3, gx = cx - 26;
+      ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      for (let k = 0; k <= 6; k++) { const a = -Math.PI / 2 + k * Math.PI / 3; k ? ctx.lineTo(gx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r) : ctx.moveTo(gx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r); }
+      ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = '#00f0ff22'; ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
     raf = requestAnimationFrame(frame);
@@ -89,16 +100,22 @@ export function createDuelStage(canvas, mine, theirs) {
     stop() { running = false; cancelAnimationFrame(raf); },
     resize,
     setRatio(r) { target = Math.min(1, Math.max(0, r)); },               // player share of the total power
-    hit() {
-      hits++; push = 1; shake = 5;
-      const c = elementStyle(mine.el.n).a, n = reduced ? 3 : 14, x = clashX() + 10, y = cy;
-      rings.push({x, y, r: 6, life: 1, c});
+    /** One lunge. side: 1 = my blade drives in, -1 = the rival's. power scales the sparks and the recoil. */
+    hit(side = 1, power = 1) {
+      hits++; push = side * power; shake = 5 * power;
+      const c = elementStyle(mine.el.n).a, n = reduced ? 3 : Math.round(14 * power), x = clashX() + 10 * side, y = cy;
+      rings.push({x, y, r: 6, life: 1, c: side > 0 ? c : '#ff3366'});
       for (let i = 0; i < n; i++) {
-        const a = -Math.PI / 2 + (Math.random() - 0.3) * 2.4, v = 3 + Math.random() * 7;
-        sparks.push({x, y, vx: Math.cos(a) * v + 3, vy: Math.sin(a) * v, life: 25 + Math.random() * 20, c: i % 3 ? c : '#ffffff'});
+        const a = -Math.PI / 2 + (Math.random() - 0.3) * 2.4, v = (3 + Math.random() * 7) * power;
+        sparks.push({x, y, vx: Math.cos(a) * v + 3 * side, vy: Math.sin(a) * v, life: 25 + Math.random() * 20, c: i % 3 ? c : '#ffffff'});
       }
       if (sparks.length > 220) sparks.splice(0, sparks.length - 220);
     },
-    debug: () => ({shown, hits, sparks: sparks.length, running, fit}),
+    /** Raise the shield dome for `ms` of real time. */
+    guard(ms = 1200) {
+      guardUntil = performance.now() + ms;
+      rings.push({x: clashX() - 26, y: cy, r: 10, life: 1, c: '#00f0ff'});
+    },
+    debug: () => ({shown, hits, sparks: sparks.length, running, fit, guarded: performance.now() < guardUntil}),
   };
 }

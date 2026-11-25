@@ -694,3 +694,109 @@ body.od .lever-glass i { background: repeating-linear-gradient(90deg, #ffcc33 0 
   .stage-wrap { height: 150px; }
   .hud { row-gap: 6px; padding-bottom: 8px; }
 }
+
+/* ==========================================================================
+   GAME FEEL PASS: floating numbers, screen slice, quench telegraph,
+   claim-all, instant Гиро prizes, the tactical duel bar and the case show.
+   ========================================================================== */
+
+/* floating damage / credit numbers — fixed over the page, never part of any layout */
+.floatnum { position: fixed; z-index: 60; transform: translate(-50%, -50%); pointer-events: none;
+  font: 900 20px/1 var(--mono); color: var(--gold); text-shadow: 0 2px 0 #000, 0 0 16px #ffcc33aa; white-space: nowrap;
+  animation: floatnum .95s cubic-bezier(.22, 1, .36, 1) forwards; }
+.floatnum.crit { font-size: 27px; color: #fff; text-shadow: 0 2px 0 #000, 0 0 10px var(--pink), 0 0 28px var(--pink); }
+@keyframes floatnum {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.6); }
+  18% { opacity: 1; transform: translate(-50%, -62%) scale(1.14); }
+  36% { transform: translate(-50%, -70%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -168%) scale(.92); }
+}
+
+/* diagonal screen slice: one bright cut, then the two halves shear apart and snap back */
+.screen-slice { position: fixed; inset: 0; z-index: 70; pointer-events: none; overflow: hidden; }
+.screen-slice::before, .screen-slice::after { content: ''; position: absolute; inset: -20%;
+  background: linear-gradient(118deg, transparent calc(50% - 1.5px), var(--sc) 50%, transparent calc(50% + 1.5px));
+  filter: drop-shadow(0 0 14px var(--sc)); }
+.screen-slice::before { animation: sliceCut .22s ease-out forwards; }
+.screen-slice::after { background: linear-gradient(118deg, #000 calc(50% - 2px), transparent 50%);
+  animation: sliceShear .62s cubic-bezier(.16, 1, .3, 1) forwards; }
+@keyframes sliceCut { 0% { opacity: 0; transform: translateX(-60%); } 40% { opacity: 1; } 100% { opacity: 0; transform: translateX(60%); } }
+@keyframes sliceShear { 0% { opacity: 0; } 22% { opacity: .85; transform: translate(-10px, 6px); } 100% { opacity: 0; transform: translate(0, 0); } }
+
+/* quench telegraph: the 320 ms guard window flashes gold and swallows inertial taps */
+.temper.lead .temper-bar { box-shadow: 0 0 0 2px var(--gold), 0 0 34px #ffcc33cc; animation: temperLead .32s ease-out; }
+.temper.lead .marker { opacity: 0; }
+.temper.lead .zone { animation: temperZone .32s steps(4) ; }
+@keyframes temperLead { 0% { background: #ffcc33; } 100% { background: #0c1120; } }
+@keyframes temperZone { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ЗАБРАТЬ ВСЁ: the one gold button above the achievement list */
+.claim-all { width: 100%; min-height: 58px; margin: 0 0 12px; font: 900 17px/1 var(--display); letter-spacing: .06em;
+  color: #241a00; border: 3px solid transparent;
+  background: linear-gradient(180deg, #fff6c8, var(--gold) 55%, #b8860b) padding-box,
+    repeating-linear-gradient(-45deg, var(--hz) 0 10px, #15171c 10px 20px) border-box;
+  box-shadow: 0 0 34px #ffcc3355; animation: claimAllPulse 1.5s ease-in-out infinite; }
+.claim-all:active { transform: translateY(3px); }
+@keyframes claimAllPulse { 50% { box-shadow: 0 0 54px #ffcc33aa; } }
+
+/* Гиро-Реактор: the prize lands in the drawer instead of waiting for a forge */
+.gyro-prize { display: grid; justify-items: center; gap: 2px; margin: 8px 0; padding: 12px 14px; clip-path: var(--chamfer);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--gc) 22%, #0c1120), #0b0f18);
+  border: 2px solid var(--gc); box-shadow: inset 0 0 26px color-mix(in srgb, var(--gc) 30%, transparent), 0 0 30px color-mix(in srgb, var(--gc) 35%, transparent);
+  animation: prizeIn .42s cubic-bezier(.2, 1.4, .4, 1); }
+.gyro-prize-n { font: 900 13px/1 var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--gc); }
+.gyro-prize b { font: 900 26px/1.1 var(--mono); }
+.gyro-prize small { color: var(--muted); font-size: 12px; }
+.gyro-prize.jackpot { animation: prizeIn .42s cubic-bezier(.2, 1.4, .4, 1), gyroFlash 1s ease-out 2; }
+@keyframes prizeIn { 0% { opacity: 0; transform: scale(.72) translateY(10px); } 60% { opacity: 1; } }
+.gyro-again { display: grid; gap: 8px; }
+
+/* tactical duel: three abilities with cooldown sweeps + the ×1 / ×2 clock */
+.duel-bar { display: grid; gap: 8px; margin-top: 10px; }
+.duel-abilities { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.ability { position: relative; overflow: hidden; display: grid; justify-items: center; align-content: center; gap: 2px;
+  min-height: 74px; padding: 8px 4px; border: 2px solid var(--steel-edge); clip-path: var(--chamfer);
+  background: linear-gradient(180deg, #202942, #0d1220); color: var(--muted); text-align: center; }
+.ability b { font: 800 11px/1.15 var(--display); letter-spacing: .03em; }
+.ability small { font-size: 10px; font-weight: 700; }
+.ability-ic { font-size: 22px; line-height: 1; filter: saturate(1.2); }
+.ability.ready { color: var(--text); border-color: var(--h); box-shadow: inset 0 0 20px color-mix(in srgb, var(--h) 24%, transparent), 0 0 16px color-mix(in srgb, var(--h) 28%, transparent); }
+.ability.ready small { color: var(--h); }
+.ability.active { border-color: var(--cyan); box-shadow: inset 0 0 0 2px var(--cyan), 0 0 28px #00f0ffaa; }
+.ability.punch { transform: translateY(3px); }
+/* the cooldown is one dark curtain that drains away; --cd runs 1 → 0 */
+.ability::after { content: ''; position: absolute; inset: 0; pointer-events: none; transform-origin: bottom;
+  transform: scaleY(var(--cd, 0)); background: #050810cc; transition: transform .1s linear; }
+.duel-speed { display: flex; justify-content: center; gap: 8px; }
+.duel-speed .chip { min-height: 38px; padding: 6px 16px; font: 800 14px/1 var(--mono); }
+.view.duel.shielded .duel-top .fighter.opp .bar i { filter: grayscale(.7) brightness(.6); }
+@media (max-width: 400px) {
+  .ability { min-height: 66px; }
+  .ability b { font-size: 10px; }
+  .ability-ic { font-size: 19px; }
+}
+
+/* container opening show: full-screen, skippable */
+.case-open { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
+  background: radial-gradient(110% 80% at 50% 45%, #0b1226f2 0, #03050bfa 70%); animation: caseIn .22s ease-out; }
+.case-open.out { animation: caseOut .24s ease-in forwards; }
+.case-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.case-name { position: absolute; top: calc(18px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center;
+  font: 900 14px/1 var(--display); letter-spacing: .22em; color: var(--hz); text-shadow: 0 0 18px #ffc41a88; }
+.case-skip { position: absolute; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 1; opacity: .8; }
+@keyframes caseIn { from { opacity: 0; } }
+@keyframes caseOut { to { opacity: 0; } }
+
+/* the side-panel section switcher had markup but no rule */
+.side-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.side-tabs .chip { flex: 1; min-height: 34px; justify-content: center; padding: 5px 8px; font-size: 12px; }
+.side-tabs .chip .count { min-width: 18px; padding: 0 4px; border-radius: 999px; background: var(--pink); color: #fff; font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .floatnum, .claim-all, .gyro-prize, .case-open, .temper.lead .temper-bar { animation: none; }
+  .screen-slice { display: none; }
+}
+
+/* the HUD plate is a flex item: without min-width:0 its intrinsic width wins and it rides over the counters */
+.hud-center, .hud .plate { min-width: 0; max-width: 100%; }
+.hud .plate b, .hud .plate small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

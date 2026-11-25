@@ -1,4 +1,4 @@
-// Гиро-Реактор: credit stake → weighted wheel → a charge for the next manual forge. Pure functions, no DOM.
+// Гиро-Реактор: credit stake → weighted wheel → the prize is paid out at once. Pure functions, no DOM.
 import {GYRO} from '../config/gameData.js';
 
 export const minBet = locMult => Math.round(GYRO.minBet * locMult);
@@ -18,24 +18,29 @@ export function spinIndex(rng = Math.random) {
 }
 
 export const sectorOf = i => GYRO.sectors[GYRO.wheel[i].s];
-export const makeCharge = (stake, m) => ({m, stake, payout: Math.round(stake * m)});
 
-/** Credits for the charged forge: ×2 and up also multiply the forge's own credits; the payout always comes back. */
-export const applyCharge = (gain, ch) => { const s = chargeSplit(gain, ch); return s.earned + s.payout; };
+/**
+ * What the spin actually hands over, settled immediately.
+ * credits: paid into the balance · box: a free container id · od: start OVERDRIVE · heat: extra reactor %.
+ * A кейс won on a token stake pays ×2 credits instead, so repeat min-bet spins can't farm containers.
+ */
+export function prizeOf(sector, stake, locMult = 1) {
+  const kind = sector.kind ?? 'credits';
+  if (kind === 'box' && stake < minBet(locMult) * GYRO.boxMinStake) {
+    return {kind: 'credits', n: '×2 Кредиты', c: sector.c, m: 2, credits: stake * 2, box: null, od: false, heat: 0};
+  }
+  return {
+    kind, n: sector.n, c: sector.c, m: sector.m,
+    credits: Math.round(stake * sector.m),
+    box: kind === 'box' ? sector.box : null,
+    od: kind === 'od',
+    heat: GYRO.heat[sector.m] ?? 0,
+  };
+}
 
-/** The same credits split in two: `earned` counts for stats and contracts, `payout` is the stake coming back. */
-export const chargeSplit = (gain, ch) => ({earned: Math.round(gain * (ch.m >= 2 ? ch.m : 1)), payout: ch.payout});
-
-/** Sector odds in % (for the legend) and the expected payout per staked credit. */
+/** Sector odds in % (for the legend) and the expected credit payout per staked credit. */
 export function odds() {
   const total = GYRO.wheel.reduce((t, x) => t + x.w, 0);
   return GYRO.sectors.map((s, i) => ({...s, p: GYRO.wheel.filter(x => x.s === i).reduce((t, x) => t + x.w, 0) / total * 100}));
 }
 export const expectedReturn = () => odds().reduce((t, s) => t + s.p / 100 * s.m, 0);
-
-/** A charge loaded from a save is trusted only if it is well-formed. */
-export function sanitizeCharge(c) {
-  if (!c || typeof c !== 'object') return null;
-  const ok = GYRO.sectors.some(s => s.m === c.m) && [c.stake, c.payout].every(n => Number.isFinite(n) && n >= 0);
-  return ok ? {m: c.m, stake: Math.floor(c.stake), payout: Math.floor(c.payout), respun: c.respun === true} : null;   // respun: the one ad re-spin is used
-}

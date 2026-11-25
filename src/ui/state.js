@@ -1,6 +1,5 @@
 // Save game: one JSON blob in localStorage, versioned so future updates can migrate old saves.
 import {SAVE_KEY, SAVE_VERSION, CONTRACTS} from '../config/gameData.js';
-import {sanitizeCharge} from '../engine/gyro.js';
 import {sanitizeDex} from '../engine/collection.js';
 import {sanitizeAch} from '../engine/achievements.js';
 
@@ -10,7 +9,7 @@ export const fresh = () => ({
   up: {mult: 0, luck: 0, reactor: 0, auto: 0, strike: 0},
   arsenal: [], nextId: 1, contracts: [],
   bots: null, botsLeague: -1, smugglerAt: 0, muted: false,
-  gyro: {charge: null, spins: 0, wagered: 0, returned: 0, best: 0, hits3: 0, hits5: 0},   // Гиро-Реактор: pending charge + spin stats
+  gyro: {spins: 0, wagered: 0, returned: 0, best: 0, hits3: 0, hits5: 0},   // Гиро-Реактор spin stats (prizes pay out at once, nothing is held)
   dex: {}, dexFilled: false,                                           // Каталог находок: "loc:slot:name" → best rank; filled once from old saves
   ach: {claimed: [], seen: []},                                        // Достижения: claimed rewards, and the ones already announced
   boxes: {standard: 0, military: 0, titanium: 0},                      // free containers won from achievements
@@ -31,8 +30,9 @@ export function load(storage = globalThis.localStorage) {
       const f = fresh();
       const g = {...f.gyro, ...(s.gyro && typeof s.gyro === 'object' ? s.gyro : {})};   // saves from before the Гиро-Реактор have none
       for (const k of ['spins', 'wagered', 'returned', 'best', 'hits3', 'hits5']) if (!Number.isFinite(g[k]) || g[k] < 0) g[k] = 0;
+      delete g.charge;                                                   // prizes used to wait for the next forge; they are paid on the spot now
       const b = s.boxes && typeof s.boxes === 'object' ? s.boxes : {};
-      return {...f, ...s, up: {...f.up, ...s.up}, stats: {...f.stats, ...s.stats}, gyro: {...g, charge: sanitizeCharge(g.charge)},
+      return {...f, ...s, up: {...f.up, ...s.up}, stats: {...f.stats, ...s.stats}, gyro: g,
               dex: sanitizeDex(s.dex), dexFilled: s.dexFilled === true, ach: sanitizeAch(s.ach),
               boxes: {standard: count(b.standard), military: count(b.military), titanium: count(b.titanium)},
               tut: Number.isInteger(s.tut) ? s.tut : (s.stats?.forges > 0 ? 99 : 0)};   // players from before onboarding skip it

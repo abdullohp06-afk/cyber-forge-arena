@@ -44,6 +44,31 @@ export function shake(el, strong = false) {
   el.classList.remove('shake', 'shake-hard'); void el.offsetWidth; el.classList.add(strong ? 'shake-hard' : 'shake');
 }
 
+/**
+ * A damage / credit number that flies up out of an element and fades. `cls` adds a variant ('crit').
+ * Text only, positioned over the page: it never affects layout and needs no canvas.
+ */
+export function floatNum(el, text, cls = '') {
+  if (!el) return;
+  const r = el.getBoundingClientRect(), n = document.createElement('div');
+  n.className = `floatnum ${cls}`.trim();
+  n.textContent = text;                                               // text, never HTML
+  n.style.left = `${r.left + r.width / 2 + (Math.random() - 0.5) * Math.min(80, r.width * 0.5)}px`;
+  n.style.top = `${r.top + r.height * 0.35}px`;
+  (document.getElementById('plates') ?? document.body).append(n);
+  setTimeout(() => n.remove(), REDUCED ? 60 : 1100);
+}
+
+/** Diagonal screen slice for the biggest reveals: two halves part along the cut, then snap back. */
+export function screenSlice(color = '#ffffff') {
+  if (REDUCED) return;
+  const n = document.createElement('div');
+  n.className = 'screen-slice';
+  n.style.setProperty('--sc', color);
+  (document.getElementById('plates') ?? document.body).append(n);
+  setTimeout(() => n.remove(), 700);
+}
+
 export const vibrate = pattern => {
   try {
     if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;   // browsers refuse (and log an error) before the first tap

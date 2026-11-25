@@ -229,17 +229,38 @@ function rarityFx(ctx, tier, gp, t, color) {
       ctx.quadraticCurveTo(gx - 14 - k * 6, gy + s * (16 + k * 6) * flap, gx - 36 - k * 8, gy + s * (20 + k * 8) * flap); ctx.stroke();
     }
   }
-  if (tier >= 5) {                                                   // Мифический: orbiting shards and a crown of particles
+  if (tier >= 4) {                                                   // Легендарный+: a rune ring and shards orbiting the blade
     ctx.shadowBlur = 8;
-    for (let i = 0; i < 5; i++) {
-      const a = t * 0.9 + i * TAU / 5, x = Math.cos(a) * 104, y = Math.sin(a) * 40, r = 4 + 2 * rnd(i);
+    runeRing(ctx, t, color, tier);
+    const shards = tier >= 5 ? 5 : 3;
+    for (let i = 0; i < shards; i++) {
+      const a = t * 0.9 + i * TAU / shards, x = Math.cos(a) * 104, y = Math.sin(a) * 40, r = 4 + 2 * rnd(i);
       ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x, y - r * 1.6); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r * 1.6); ctx.lineTo(x - r, y); ctx.fill();
     }
+  }
+  if (tier >= 5) {                                                   // Мифический: a crown of particles over the blade
     for (let i = 0; i < 9; i++) {
       const a = Math.PI + (i + 1) / 10 * Math.PI;
       ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(t * 4 + i));
       ctx.fillStyle = i % 2 ? '#ffffff' : color;
       ctx.beginPath(); ctx.arc(Math.cos(a) * 40, -24 + Math.sin(a) * 26, 2, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+const RUNES = 'ᚠᚢᚦᚨᚱᚲᚷᚹᚺᚾᛁᛃ';
+/** A slowly turning ring of runes behind the blade. Mythic gets a second, counter-rotating ring. */
+function runeRing(ctx, t, color, tier) {
+  ctx.save();
+  ctx.font = '700 11px "JetBrains Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const [spin, rx, ry, n] of tier >= 5 ? [[0.22, 92, 34, 12], [-0.15, 66, 24, 8]] : [[0.22, 92, 34, 10]]) {
+    for (let i = 0; i < n; i++) {
+      const a = t * spin + i * TAU / n;
+      ctx.globalAlpha = 0.25 + 0.45 * (0.5 + 0.5 * Math.sin(a));                // the far side of the ring fades
+      ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 6;
+      ctx.fillText(RUNES[i % RUNES.length], Math.cos(a) * rx, Math.sin(a) * ry);
     }
   }
   ctx.restore();
@@ -270,14 +291,53 @@ export function drawWeapon(ctx, art, x, y, size, {t = 0, heat = 0, flip = false,
   ctx.fillStyle = art.pk.r === 5 ? '#ff3366' : st.b; ctx.shadowColor = st.a; ctx.shadowBlur = 6;
   ctx.fillText(rank >= 5 ? 'Ω' : ROMAN[rank] || 'I', 0, 0.5);
   ctx.restore();
-  if (art.tempered) { ctx.strokeStyle = '#ffcc33'; ctx.lineWidth = 1.5; ctx.shadowColor = '#ffcc33'; ctx.shadowBlur = 12; ctx.strokeRect(-100, -44, 200, 88); ctx.shadowBlur = 0; }
-  if (heat > 0) {
-    ctx.globalCompositeOperation = 'lighter';
-    const g = ctx.createRadialGradient(0, 0, 4, 0, 0, 100);
-    g.addColorStop(0, `rgba(255,255,240,${0.9 * heat})`); g.addColorStop(0.5, `rgba(255,190,60,${0.5 * heat})`); g.addColorStop(1, 'rgba(255,120,0,0)');
-    ctx.fillStyle = g; ctx.fillRect(-100, -50, 200, 100);
-  }
+  if (art.tempered) temperedFrame(ctx, t, still);
+  if (heat > 0) coolDown(ctx, heat, st.a);
   ctx.restore();
+}
+
+/** ★ ЗАКАЛЁН: a gold frame with two lightning bolts running around it in opposite directions. */
+function temperedFrame(ctx, t, still) {
+  const w = 200, h = 88, per = 2 * (w + h);                                   // perimeter of the frame, walked by the bolts
+  const at = d => {                                                          // distance along the perimeter → point on the frame
+    let k = ((d % per) + per) % per;
+    if (k < w) return [-100 + k, -44];
+    if ((k -= w) < h) return [100, -44 + k];
+    if ((k -= h) < w) return [100 - k, 44];
+    return [-100, 44 - (k - w)];
+  };
+  ctx.strokeStyle = '#ffcc33'; ctx.lineWidth = 1.5; ctx.shadowColor = '#ffcc33'; ctx.shadowBlur = 12;
+  ctx.strokeRect(-100, -44, w, h);
+  if (!still) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.shadowBlur = 16;
+    for (const dir of [1, -1]) {
+      const head = dir * t * 300 + (dir < 0 ? per / 2 : 0);
+      ctx.strokeStyle = '#fff3b0'; ctx.beginPath();
+      for (let k = 0; k <= 9; k++) { const [px, py] = at(head - dir * k * 5); k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+      ctx.globalAlpha = 0.9; ctx.stroke();
+    }
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.shadowBlur = 0;
+}
+
+/**
+ * The 0.8 s cool-down after a hammer blow: white hot → orange → cherry red → gone, letting the
+ * element colour underneath take back over. heat runs 1 → 0 over the 800 ms the stage gives it.
+ */
+function coolDown(ctx, heat, elColor) {
+  const stops = [[255, 255, 245], [255, 190, 60], [190, 30, 40]];             // white · orange · cherry
+  const k = (1 - heat) * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(k)), f = k - i;
+  const mix = stops[i].map((v, n) => Math.round(v + (stops[i + 1][n] - v) * f));
+  const core = `rgba(${mix.join(',')},${0.95 * heat})`;
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(0, 0, 4, 0, 0, 100);
+  g.addColorStop(0, core);
+  g.addColorStop(0.45, `rgba(${mix.join(',')},${0.45 * heat})`);
+  g.addColorStop(0.8, elColor + Math.round(0x33 * heat).toString(16).padStart(2, '0'));   // the last of the glow bleeds into the element
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(-100, -50, 200, 100);
 }
 
 const thumbs = new Map();

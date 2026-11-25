@@ -13,3 +13,4 @@ android/**/build/
 .vercel/
 
 .vercel
+.playwright-mcp/

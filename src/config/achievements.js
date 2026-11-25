@@ -38,8 +38,8 @@ export const ACHIEVEMENTS = [
 
   {id: 'g1', cat: 'risk', n: 'Первый оборот', d: 'Раскрути Гиро-Реактор', v: S => S.gyro.spins, goal: 1, reward: {credits: 50}},
   {id: 'g25', cat: 'risk', n: 'Завсегдатай реактора', d: '25 спинов Гиро-Реактора', v: S => S.gyro.spins, goal: 25, reward: {credits: 1200}},
-  {id: 'g3', cat: 'risk', n: 'Тройной заряд', d: 'Выбей ×3 в Гиро-Реакторе', v: S => S.gyro.hits3 ?? 0, goal: 1, reward: {credits: 500}},
-  {id: 'g5', cat: 'risk', n: 'Перегрузка', d: 'Выбей ×5 в Гиро-Реакторе', v: S => S.gyro.hits5 ?? 0, goal: 1, reward: {box: 'military'}},
+  {id: 'g3', cat: 'risk', n: 'Крупный куш', d: 'Выбей ×2.5 в Гиро-Реакторе', v: S => S.gyro.hits3 ?? 0, goal: 1, reward: {credits: 500}},
+  {id: 'g5', cat: 'risk', n: 'Джекпот', d: 'Выбей ДЖЕКПОТ ×7 в Гиро-Реакторе', v: S => S.gyro.hits5 ?? 0, goal: 1, reward: {box: 'military'}},
 
   {id: 'a1', cat: 'arena', n: 'Первая кровь', d: 'Победи на Арене', v: S => S.stats.wins, goal: 1, reward: {credits: 150}},
   {id: 'a10', cat: 'arena', n: 'Гладиатор', d: '10 побед на Арене', v: S => S.stats.wins, goal: 10, reward: {arena: 0.05}},
