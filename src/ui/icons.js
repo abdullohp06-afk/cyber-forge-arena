@@ -15,6 +15,7 @@ const P = {
   coin: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM9 9h4.5a1.5 1.5 0 0 1 0 3H10.5a1.5 1.5 0 0 0 0 3H15M12 7v2M12 15v2',
   close: 'M6 6l12 12M18 6L6 18',
   medal: 'M8 2h8l-2 6h-4zM12 8a6 6 0 1 1 0 12 6 6 0 0 1 0-12zM12 11l1 2 2 .3-1.5 1.4.4 2.1-1.9-1-1.9 1 .4-2.1L9 13.3l2-.3z',
+  gear: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4M12 2v2m0 16v2',
 };
 export const icon = (name, cls = '') =>
   `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${P[name]}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;

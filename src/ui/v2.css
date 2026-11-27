@@ -1,0 +1,383 @@
+/* ==================== CYBER-FORGE v2.0 RESPONSIVE STYLES (PC + MOBILE) ==================== */
+
+/* 1. UI Polish fixes for existing Forge & Arena */
+.forgebtn {
+  color: #041018 !important;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+@media (min-width: 960px) {
+  .forge-main {
+    gap: 6px !important;
+    padding-bottom: 12px !important;
+  }
+  .forge-main .tools {
+    margin-bottom: 6px;
+  }
+}
+.duel-hint, .arena-hint {
+  font-size: 13px !important;
+  color: #cbd5e1 !important;
+  line-height: 1.45;
+}
+
+/* 2. CRT Scanlines Overlay */
+.cf-crt {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 8500;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.14) 50%);
+  background-size: 100% 4px;
+  opacity: 0.35;
+  transition: opacity 0.25s ease;
+}
+body.no-crt .cf-crt { opacity: 0; }
+
+/* 3. Overclock & Rune badges on weapon cards */
+.art-oc {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+  color: #090d14;
+  font-weight: 900;
+  font-size: 10px;
+}
+.art-rune {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(192, 132, 252, 0.22);
+  border: 1px solid rgba(192, 132, 252, 0.65);
+  color: #e9d5ff;
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+/* 4. VIP Fixer Drone (responsive top-right floating widget) */
+@keyframes cf-hover {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-6px) rotate(1.5deg); }
+}
+.cf-drone {
+  position: fixed;
+  top: 62px;
+  right: 12px;
+  z-index: 8600;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  pointer-events: none;
+  transform: translate(150%, -40%) scale(0.6);
+  opacity: 0;
+  transition: transform 0.85s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.35s ease;
+}
+.cf-drone.arrived {
+  transform: translate(0, 0) scale(1);
+  opacity: 1;
+  pointer-events: auto;
+}
+.cf-drone-fab {
+  background: rgba(10, 16, 28, 0.9);
+  border: 1px solid rgba(0, 240, 255, 0.55);
+  border-radius: 14px;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75), 0 0 16px rgba(0, 240, 255, 0.25);
+  animation: cf-hover 2.4s ease-in-out infinite;
+}
+.cf-drone-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #fbbf24;
+  margin-top: -2px;
+}
+.cf-drone-pop {
+  margin-top: 8px;
+  width: min(290px, 86vw);
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(11, 17, 29, 0.97);
+  border: 1px solid rgba(0, 240, 255, 0.5);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.9);
+  color: #e2e8f0;
+}
+.cf-drone-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #38bdf8;
+  margin-bottom: 6px;
+}
+.cf-drone-head button {
+  background: #1e293b; color: #cbd5e1; border: none; border-radius: 6px; width: 22px; height: 22px; cursor: pointer;
+}
+.cf-drone-pop p { font-size: 11.5px; color: #cbd5e1; margin: 0 0 10px; line-height: 1.4; }
+.cf-drone-btns { display: flex; flex-direction: column; gap: 6px; }
+
+/* 5. Shared v2 Modals & Buttons */
+.v2-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9200;
+  background: rgba(4, 7, 14, 0.86);
+  backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow-y: auto;
+}
+.v2-backdrop.open { display: flex; }
+
+.v2-modal {
+  width: 100%;
+  max-width: 440px;
+  max-height: 92dvh;
+  overflow-y: auto;
+  background: linear-gradient(165deg, #121a28 0%, #090d16 100%);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 20px;
+  padding: 16px;
+  color: #f1f5f9;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.v2-modal.v2-trade { max-width: 720px; }
+
+.v2-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+.v2-head b {
+  flex: 1;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+.v2-lamp {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #00f0ff; box-shadow: 0 0 10px #00f0ff;
+}
+.v2-lamp.red { background: #ff1e56; box-shadow: 0 0 10px #ff1e56; }
+.v2-x {
+  width: 30px; height: 30px; border-radius: 9px;
+  background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+  font-weight: 800; cursor: pointer;
+}
+
+.v2-btn {
+  border: none;
+  border-radius: 11px;
+  padding: 10px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.v2-btn:active { transform: scale(0.96); }
+.v2-btn:disabled { opacity: 0.45; cursor: not-allowed; filter: grayscale(0.5); }
+.v2-btn.wide { width: 100%; }
+.v2-btn.sm { padding: 7px 10px; font-size: 11px; }
+.v2-cyan { background: linear-gradient(90deg, #00e5ff, #00ff9d); color: #041018; }
+.v2-hazard {
+  background: repeating-linear-gradient(-45deg, #f59e0b, #f59e0b 10px, #d97706 10px, #d97706 20px);
+  color: #090d14;
+  border: 1px solid #fde68a;
+  box-shadow: 0 0 18px rgba(245, 158, 11, 0.3);
+}
+.v2-ad { background: linear-gradient(90deg, #7c3aed, #db2777); color: #fff; }
+.v2-ghost { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+.v2-danger { background: rgba(225, 29, 72, 0.2); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.55); }
+
+.v2-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.v2-grid2 { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 10px; }
+@media (min-width: 720px) {
+  .v2-grid2 { grid-template-columns: 1fr 1fr; }
+}
+
+/* 6. Overclock Casino Modal */
+.v2-oc-stage {
+  position: relative;
+  text-align: center;
+  padding: 16px 12px;
+  border-radius: 14px;
+  background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--tc) 25%, transparent), #080c14 75%);
+  border: 1px solid color-mix(in srgb, var(--tc) 50%, #1e293b);
+  margin-bottom: 12px;
+}
+.v2-oc-badge {
+  position: absolute; top: 8px; right: 10px;
+  padding: 2px 8px; border-radius: 99px;
+  background: rgba(245, 158, 11, 0.18); border: 1px solid #f59e0b;
+  color: #fde68a; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 800;
+}
+.v2-oc-img { width: 170px; height: 68px; object-fit: contain; filter: drop-shadow(0 0 14px var(--tc)); }
+.v2-oc-name { font-weight: 800; font-size: 14px; margin-top: 6px; }
+.v2-oc-pow { font-size: 13px; color: #fbbf24; margin-top: 2px; }
+.v2-oc-pow b { color: #00ff9d; }
+
+.v2-oc-msg {
+  padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; margin-bottom: 10px; text-align: center;
+}
+.v2-oc-msg.ok { background: rgba(16, 185, 129, 0.18); border: 1px solid #10b981; color: #a7f3d0; }
+.v2-oc-msg.warn { background: rgba(56, 189, 248, 0.18); border: 1px solid #38bdf8; color: #bae6fd; }
+.v2-oc-msg.err { background: rgba(244, 63, 94, 0.2); border: 1px solid #f43f5e; color: #fecdd3; }
+
+.v2-gauge-box { background: #0a101b; border: 1px solid #1e293b; border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+.v2-gauge-bar { display: flex; height: 12px; border-radius: 99px; overflow: hidden; background: #1e293b; }
+.v2-gauge-ok { background: linear-gradient(90deg, #00e5ff, #00ff9d); transition: width 0.3s ease; }
+.v2-gauge-risk { background: linear-gradient(90deg, #f97316, #ef4444); transition: width 0.3s ease; }
+.v2-gauge-nums { display: flex; justify-content: space-between; margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.v2-gauge-nums .ok { color: #34d399; }
+.v2-gauge-nums .risk { color: #fb7185; }
+
+.v2-cryo-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 12px; background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.35); margin-bottom: 10px;
+}
+.v2-cryo-row b { display: block; font-size: 12px; color: #bae6fd; }
+.v2-cryo-row small { font-size: 10.5px; color: #94a3b8; }
+.v2-safe-note { text-align: center; font-size: 11px; color: #34d399; margin-bottom: 10px; font-weight: 600; }
+.v2-oc-actions { display: flex; flex-direction: column; gap: 7px; }
+.v2-oc-melted { text-align: center; padding: 14px 4px; }
+.v2-melt-icon { font-size: 42px; margin-bottom: 8px; }
+
+/* 7. Settings Modal */
+.v2-set-list { display: flex; flex-direction: column; gap: 8px; }
+.v2-set-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 12px; background: #0a101b; border: 1px solid #1e293b;
+}
+.v2-set-row b { display: block; font-size: 12.5px; }
+.v2-set-row small { font-size: 10.5px; color: #94a3b8; }
+.v2-tog {
+  min-width: 56px; padding: 6px 10px; border-radius: 8px; border: 1px solid #334155;
+  background: #1e293b; color: #94a3b8; font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 11px; cursor: pointer;
+}
+.v2-tog.on { background: #00f0ff; color: #041018; border-color: #67e8f9; }
+.v2-danger-box { margin-top: 6px; padding-top: 10px; border-top: 1px solid #1e293b; }
+.v2-confirm { margin-top: 8px; padding: 10px; border-radius: 10px; background: rgba(136, 19, 55, 0.35); border: 1px solid #f43f5e; text-align: center; }
+.v2-confirm p { margin: 0 0 8px; font-size: 11.5px; }
+
+/* 8. P2P Trade Terminal */
+.v2-trade-top-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.v2-trade-top-bar .v2-btn { flex: 1; min-width: 110px; }
+.v2-trade-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 680px) {
+  .v2-trade-grid { grid-template-columns: 1fr 1fr; }
+}
+.v2-tpanel {
+  background: #0b111d; border: 1px solid #1e293b; border-radius: 14px; padding: 10px;
+}
+.v2-tpanel.me { border-color: rgba(0, 240, 255, 0.35); }
+.v2-tpanel.partner { border-color: rgba(255, 30, 86, 0.35); }
+.v2-tpanel-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 11px; }
+.v2-lock-pill {
+  padding: 2px 7px; border-radius: 99px; font-size: 9.5px; font-weight: 800;
+  background: #1e293b; color: #94a3b8;
+}
+.v2-lock-pill.ok { background: rgba(16, 185, 129, 0.22); color: #34d399; border: 1px solid #10b981; }
+.v2-tslots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+.v2-tslot {
+  background: #111927; border: 1px solid color-mix(in srgb, var(--tc, #334155) 60%, #1e293b);
+  border-radius: 10px; padding: 6px 4px; text-align: center; cursor: pointer;
+}
+.v2-tslot.empty {
+  border: 1px dashed #334155; display: flex; align-items: center; justify-content: center;
+  min-height: 76px; font-size: 10px; color: #64748b; cursor: default;
+}
+.v2-tslot img { width: 100%; height: 28px; object-fit: contain; }
+.v2-tslot-t { font-size: 9px; color: var(--tc); font-weight: 800; }
+.v2-tslot-n { font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v2-tslot-p { font-size: 9.5px; color: #fbbf24; font-weight: 700; }
+.v2-tcred { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.v2-tcred input {
+  width: 90px; background: #060911; border: 1px solid #334155; color: #fbbf24;
+  border-radius: 7px; padding: 4px 6px; font-family: 'JetBrains Mono', monospace; font-weight: 700;
+}
+.v2-trade-confirm { margin: 10px 0; padding: 10px; border-radius: 12px; background: #0a0f1a; border: 1px solid #1e293b; }
+.v2-dual-checks { display: flex; justify-content: space-around; font-size: 11px; color: #94a3b8; margin-bottom: 8px; font-weight: 700; }
+.v2-dual-checks .ok { color: #34d399; }
+.v2-picker-h { font-size: 11px; color: #94a3b8; margin-bottom: 6px; }
+.v2-picker-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 110px; overflow-y: auto; }
+.v2-pick {
+  background: #111927; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px;
+  padding: 5px 8px; font-size: 10.5px; cursor: pointer; display: flex; gap: 6px; align-items: center;
+}
+.v2-pick.on { border-color: #00f0ff; background: rgba(0, 240, 255, 0.14); color: #fff; }
+.v2-pick b { color: #fbbf24; }
+
+/* 9. Syndicate, Boss Raid & Runes */
+.v2-syndicate { margin-top: 14px; }
+.v2-card {
+  background: linear-gradient(160deg, #111928 0%, #0a0f1a 100%);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 16px;
+  padding: 13px;
+}
+.v2-boss-card { border-color: rgba(244, 63, 94, 0.45); }
+.v2-boss-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.v2-boss-top h3 { margin: 4px 0 0; font-family: 'Orbitron', sans-serif; font-size: 15px; color: #fff; }
+.v2-tag {
+  display: inline-block; padding: 2px 7px; border-radius: 6px; font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; font-weight: 800; background: #1e293b; color: #cbd5e1;
+}
+.v2-tag.rose { background: rgba(244, 63, 94, 0.2); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.5); }
+.v2-tag.cyan { background: rgba(0, 240, 255, 0.16); color: #67e8f9; border: 1px solid rgba(0, 240, 255, 0.4); }
+.v2-tag.amber { background: rgba(245, 158, 11, 0.18); color: #fde68a; }
+.v2-boss-desc { font-size: 12px; color: #cbd5e1; margin: 8px 0; line-height: 1.4; }
+.v2-boss-desc .ok { color: #34d399; }
+.v2-hpbar {
+  position: relative; height: 22px; border-radius: 99px; background: #070b12;
+  border: 1px solid #334155; overflow: hidden; margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: center;
+}
+.v2-hpbar i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #e11d48, #f97316); transition: width 0.35s ease; }
+.v2-hpbar span { position: relative; z-index: 2; font-size: 11px; font-weight: 800; color: #fff; text-shadow: 0 1px 3px #000; }
+
+.v2-card-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; }
+.v2-fac-list { display: flex; flex-direction: column; gap: 6px; }
+.v2-fac {
+  text-align: left; padding: 8px 10px; border-radius: 10px; background: #090e18;
+  border: 1px solid #1e293b; color: #e2e8f0; cursor: pointer;
+}
+.v2-fac.on { border-color: var(--fc); background: color-mix(in srgb, var(--fc) 16%, #090e18); }
+.v2-fac b { display: block; font-size: 12px; color: var(--fc); }
+.v2-fac small { font-size: 10.5px; color: #94a3b8; }
+
+.v2-clan-info { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; font-size: 12px; }
+.v2-clan-info small { color: #94a3b8; font-size: 11px; }
+.v2-prestige-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+/* Runes */
+.v2-rune-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
+.v2-rune-card {
+  background: #0c1322; border: 1px solid color-mix(in srgb, var(--rc) 55%, #1e293b);
+  border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.v2-rune-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--rc); }
+.v2-rune-stat { font-size: 13px; font-weight: 800; color: #fff; }
+
+/* Arsenal extra buttons row */
+.ars-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; justify-content: flex-end; }
+.btn.oc-btn { background: linear-gradient(90deg, #f59e0b, #ea580c); color: #090d14; font-weight: 800; }
+.btn.share-btn { background: #1e293b; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); }

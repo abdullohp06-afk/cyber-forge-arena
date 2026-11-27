@@ -22,6 +22,10 @@ import {createForgeStage, stageLevel, inZone, IMPACT_DELAY} from './forgeStage.j
 import {createDuelStage} from './duelStage.js';
 import {playCaseOpen} from './caseOpen.js';
 import {weaponThumb} from './weaponArt.js';
+import {initTelegram, shareDuelLink, tgHaptic} from '../services/telegram.js';
+import {factionBonuses, BLUEPRINTS, strikeRaidBoss, socketRune, doPrestige} from '../engine/rpg.js';
+import {applyVisualSettings, openSettingsModal, initFixerDrone, downloadWeaponCard} from '../fx/neonExtras.js';
+import {openOverclockModal, openTradeModal, syndicateArenaHtml, runesSubtabHtml} from './v2Modals.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const fmt = n => Math.floor(n).toLocaleString('ru-RU');
@@ -70,7 +74,7 @@ function hud() {
   $('#mute').setAttribute('aria-label', S.muted ? 'Включить звук' : 'Выключить звук');
   $('[data-tab="quests"]').classList.toggle('has-dot', S.contracts.some(c => c.p >= c.n) || readyToClaim(S).length > 0);
 }
-function addCredits(n) { S.credits += n; S.stats.credits += n; progress('credits', n); }
+function addCredits(n) { const v = n > 0 ? Math.round(n * factionBonuses(S).creditMult) : n; S.credits = Math.max(0, S.credits + v); if (v > 0) { S.stats.credits += v; progress('credits', v); } }
 /** Pays one achievement reward into the save. The permanent perks live in S.ach.claimed, so bonuses() picks them up. */
 function payReward(r) {
   if (r.credits) addCredits(r.credits);
@@ -111,7 +115,7 @@ function storeArtifact(a, e, replaceId = null) {
 function artCard(a) {
   const t = TIERS[a.tier];
   return `<div class="art${a.tempered ? ' tempered' : ''}" style="--tc:${t.c}"><img class="wthumb" src="${weaponThumb(a)}" alt="" width="120" height="48">
-    <div class="art-tier">${t.n}${a.tempered ? ' · ★' : ''}</div>
+    <div class="art-tier">${t.n}${a.tempered ? ' · ★' : ''}${a.oc ? `<span class="art-oc">+${a.oc}</span>` : ''}${a.rune ? `<span class="art-rune">${a.rune.name}</span>` : ''}</div>
     <div class="art-name">${a.el.n} · ${a.wp.n}</div>
     <div class="art-sub">${a.pk.n} ${ROMAN[a.pk.r]} · <span class="num">#${a.idx}</span></div>
     <div class="art-pow">${icon('bolt')}<b class="num">${fmt(a.power)}</b></div></div>`;
@@ -126,6 +130,7 @@ function shell() {
       <div class="pill" title="Кредиты">${icon('coin')}<b id="credits" class="num">0</b></div>
       <div class="pill gold" title="Кубки">${icon('trophy')}<b id="trophies" class="num">0</b></div>
       <button class="iconbtn" id="mute"></button>
+      <button class="iconbtn" id="settingsBtn" aria-label="Настройки">${icon('gear')}</button>
     </header>
     <main id="screen"></main>
     <div id="plates" aria-live="polite"></div>
@@ -724,6 +729,7 @@ function renderArena() {
       <div class="card"><label class="small" for="nickInput">Твой ник в рейтинге</label>
         <div class="row nick-row"><input id="nickInput" class="nick-input" maxlength="24" autocomplete="nickname" spellcheck="false"><button class="btn" data-act="rename">Сохранить</button></div></div>
       <ol class="board" id="globalTop"><li class="small">Загрузка…</li></ol>` : ''}
+    ${syndicateArenaHtml(S, sq)}
   </section>`;
   if (!ONLINE) return;
   $('#nickInput').value = nickname();
@@ -748,7 +754,7 @@ function startDuel() {
   ensureBots();
   const real = rt.nextOpp && Date.now() - rt.nextOpp.at < 120000 ? rt.nextOpp.p : null;   // a real player from /api/arena, else a bot
   rt.nextOpp = null;
-  rt.duel = {opp: real ? opponentFromPlayer(real) : makeOpponent(S.trophies, S.bots), player: squadPower(S.arsenal), done: false, result: null, doubled: false,
+  rt.duel = {opp: real ? opponentFromPlayer(real) : makeOpponent(S.trophies, S.bots), player: Math.round(squadPower(S.arsenal) * factionBonuses(S).arenaMult * factionBonuses(S).clanMult * factionBonuses(S).prestigeMult), done: false, result: null, doubled: false,
              mine: squad(S.arsenal)[0] ?? forge(S.loc), theirs: real?.squad?.[0] ?? forge(S.loc),
              el: 0, lastReal: 0, speed: rt.duelSpeed ?? 1, exchanged: 0, oppRaw: null, oppOffset: 0, shieldUntil: -1, reflected: 0, reflectAcc: 0,
              cd: Object.fromEntries(ARENA.abilities.map(a => [a.id, 0]))};
@@ -1059,19 +1065,26 @@ function miniEnd(win, detail) {
 
 /* ---------- arsenal ---------- */
 
-const arsNav = () => `<div class="subtabs" role="group" aria-label="Раздел">${[['stock', 'Склад'], ['dex', 'Витрина']].map(([id, n]) =>
-  `<button class="chip ${rt.arsTab === id ? 'on' : ''}" data-act="arsTab" data-id="${id}" aria-pressed="${rt.arsTab === id}">${n}</button>`).join('')}</div>`;
+const arsNav = () => `<div class="subtabs" role="group" aria-label="Раздел">${[['stock', 'Склад'], ['runes', 'Руны'], ['dex', 'Витрина']].map(([id, n]) =>
+  `<button class="chip ${rt.arsTab === id ? 'on' : ''}" data-act="arsTab" data-id="${id}" aria-pressed="${rt.arsTab === id}">${n}</button>`).join('')}
+  <button class="chip" data-act="openTrade">🤝 Трейд P2P</button></div>`;
 
 function renderArsenal() {
   if (rt.arsTab === 'dex') { $('#screen').innerHTML = `<section class="view">${arsNav()}${showcaseHtml(S)}</section>`; return; }
+  if (rt.arsTab === 'runes') { $('#screen').innerHTML = `<section class="view">${arsNav()}${runesSubtabHtml(S)}</section>`; return; }
   const inSquad = new Set(squad(S.arsenal).map(a => a.id)), list = [...S.arsenal].sort((a, b) => b.power - a.power);
   $('#screen').innerHTML = `<section class="view">
     ${arsNav()}
     <h2>Арсенал <span class="num">${S.arsenal.length}/${ARSENAL_MAX}</span></h2>
-    <p class="small">Топ-3 по мощи сами встают в боевой отряд. Продажа: мощь × 2 кредитов.</p>
-    <button class="btn ghost wide" data-act="sellRare">Продать все «Редкие» вне отряда</button>
+    <p class="small">Топ-3 по мощи сами встают в боевой отряд. Разгоняй клинки в Оверклоке или меняйся в P2P-трейде.</p>
+    <div class="v2-row2" style="margin-bottom:10px;">
+      <button class="btn ghost" data-act="sellRare">Продать «Редкие»</button>
+      <button class="btn oc-btn" data-act="openTrade">🤝 Чёрный рынок (Трейд)</button>
+    </div>
     <div class="arsenal">${list.length ? list.map(a => `<div class="arsrow">${artCard(a)}
         <div class="ars-actions">${inSquad.has(a.id) ? '<span class="badge">В ОТРЯДЕ</span>' : ''}
+          <button class="btn small oc-btn" data-act="openOc" data-id="${a.id}">🔥 ${a.oc ? `+${a.oc}` : 'Разгон'}</button>
+          <button class="btn small share-btn" data-act="shareCard" data-id="${a.id}" title="Карточка для Telegram">📸</button>
           <button class="btn small" data-act="sell" data-id="${a.id}">Продать <span class="num">${fmt(sellPrice(a))}</span></button></div></div>`).join('')
       : '<div class="card small">Пусто. Артефакты «Редкий» и выше попадают сюда сами.</div>'}</div>
   </section>`;
@@ -1193,6 +1206,81 @@ const ACTIONS = {
   arsTab: id => { rt.arsTab = id; renderArsenal(); scrollTo(0, 0); },
   sideTab: id => { rt.sideTab = id === 'contracts' ? 'contracts' : 'ach'; renderSides(); },
   openDex: () => { rt.arsTab = 'dex'; show('arsenal'); },
+  openOc: id => openOverclockModal(+id, S, {persist, hud, toast, onDone: () => { if (rt.tab === 'arsenal') renderArsenal(); }}),
+  openTrade: code => openTradeModal(S, {user: rt.tgUser, persist, hud, toast, onDone: () => { if (rt.tab === 'arsenal') renderArsenal(); }}, code || null),
+  shareCard: id => {
+    const a = S.arsenal.find(x => x.id === +id);
+    if (!a) return;
+    downloadWeaponCard(a, rt.tgUser?.name || nickname() || 'Кибер-Мастер');
+    toast('📸 Карточка оружия сохранена! Кидай в Telegram-чат.');
+  },
+  bossStrike: () => {
+    const sq = squad(S.arsenal);
+    if (!sq.length) { toast('Сначала выкуй хотя бы 1 артефакт в Арсенал!'); return; }
+    const r = strikeRaidBoss(S, sq, false);
+    sfx.impact(1); tgHaptic('impact', 'medium', S.settings?.haptics !== false);
+    if (r.killed) {
+      sfx.victory(); burst($('#screen'), 34, ['#f59e0b', '#ffffff', '#ffcc33']);
+      toast(`🏆 Босс повержен! +${fmt(r.reward)} ⚡ и Чип-Руна «${r.runeDrop.name}»!`);
+    } else toast(`⚔️ Урон по боссу: ${fmt(r.dmg)}${r.weakHit ? ' (УЯЗВИМОСТЬ ×1.6!)' : ''}`);
+    persist(); hud(); renderArena();
+  },
+  bossFlux: () => {
+    const sq = squad(S.arsenal);
+    if (!sq.length || (S.flux || 0) <= 0) return;
+    const r = strikeRaidBoss(S, sq, true);
+    sfx.temperOk(); tgHaptic('impact', 'heavy', S.settings?.haptics !== false);
+    if (r.killed) {
+      sfx.victory(); burst($('#screen'), 38, ['#00ff9d', '#00f0ff', '#ffffff']);
+      toast(`🏆 Флюс-удар добил босса! +${fmt(r.reward)} ⚡ и Руна «${r.runeDrop.name}»!`);
+    } else toast(`🧪 Флюс-удар ×1.45! Урон: ${fmt(r.dmg)}`);
+    persist(); hud(); renderArena();
+  },
+  pickFaction: id => {
+    S.faction = id; sfx.coin(); tgHaptic('select', 'light', S.settings?.haptics !== false);
+    toast('Синдикат выбран! Бонус активен.'); persist(); renderArena();
+  },
+  clanCreate: () => {
+    const name = prompt('Введи название твоего Клана (например: NEON SQUAD):');
+    if (!name || !name.trim()) return;
+    const tag = name.trim().slice(0, 3).toUpperCase();
+    S.clan = {name: name.trim().slice(0, 18), tag, lv: 1};
+    sfx.victory(); toast(`🛡️ Клан [${tag}] создан!`); persist(); renderArena();
+  },
+  clanUpgrade: () => {
+    if (!S.clan) return;
+    const cost = S.clan.lv * 800;
+    if (S.credits < cost) { toast(`Нужно ${fmt(cost)} ⚡ для прокачки Наковальни`); return; }
+    S.credits -= cost; S.clan.lv++; sfx.temperOk();
+    toast(`🔥 Клан-Наковальня Ур.${S.clan.lv}!`); persist(); hud(); renderArena();
+  },
+  shareDuel: () => {
+    shareDuelLink(rt.tgUser?.id || 'master', squadPower(S.arsenal));
+    toast('✈️ Ссылка-вызов готова для Telegram!');
+  },
+  prestige: () => {
+    if (!confirm('Сбросить Ядро ради вечного +25% к мощи? Топ-3 оружия, кубки, руны и клан сохранятся!')) return;
+    if (doPrestige(S)) {
+      sfx.victory(); burst($('#screen'), 44, ['#c084fc', '#ffffff', '#00f0ff']);
+      toast(`✨ Сброс Ядра! Престиж Ур.${S.prestige}`); persist(); hud(); show('forge');
+    }
+  },
+  craftBp: id => {
+    const bp = BLUEPRINTS.find(x => x.id === id);
+    if (!bp || (S.scrap || 0) < bp.scrapCost) return;
+    S.scrap -= bp.scrapCost;
+    const r = bestOf(S.loc, bp.tries);
+    storeArtifact(r.a, r.e);
+    sfx.victory(); burst($('#screen'), 40, [TIERS[r.e.tier].c, '#ffffff']);
+    toast(`🛠️ Собрано по чертежу: ${TIERS[r.e.tier].n} ${r.a.el.n}·${r.a.wp.n}!`);
+    persist(); hud(); renderArsenal();
+  },
+  socketRune: uid => {
+    const top = [...S.arsenal].sort((a, b) => b.power - a.power)[0];
+    if (!top) return;
+    const r = socketRune(S, top.id, uid);
+    if (r.ok) { sfx.temperOk(); toast(`💎 Руна «${r.rune.name}» впаяна в ${top.el.n}·${top.wp.n}!`); persist(); renderArsenal(); }
+  },
   duel: () => startDuel(),
   duelAbility: id => duelAbility(id),
   duelSpeed: id => {
@@ -1340,6 +1428,23 @@ export function start() {
     if (t.dataset.tab) show(t.dataset.tab); else ACTIONS[t.dataset.act]?.(t.dataset.id);
   });
   $('#mute').addEventListener('click', () => { S.muted = !S.muted; setMuted(S.muted); persist(); hud(); });
+  const tgInfo = initTelegram();
+  rt.tgUser = tgInfo.user;
+  applyVisualSettings(S);
+  $('#settingsBtn')?.addEventListener('click', () => openSettingsModal(S, {
+    persist, hud, squadPow: squadPower(S.arsenal), userId: rt.tgUser?.id,
+    onReset: () => { S = fresh(); fillContracts(); ensureBots(); persist(); hud(); show('forge'); toast('Прогресс сброшен!'); }
+  }));
+  initFixerDrone({
+    getState: () => S, toast,
+    onReward: (delta, msg) => { addCredits(delta); persist(); hud(); toast(msg); }
+  });
+  if (tgInfo.startParam?.startsWith('trade_')) {
+    const code = tgInfo.startParam.slice(6).toUpperCase();
+    setTimeout(() => ACTIONS.openTrade(code), 600);
+  } else if (tgInfo.startParam?.startsWith('duel_')) {
+    setTimeout(() => show('arena'), 500);
+  }
   document.addEventListener('keydown', e => {
     if (e.code !== 'Space' || $('.ad-modal') || $('.auth-modal')) return;   // typing a password must not forge
     if (!(e.target === document.body || e.target.id === 'forgeBtn' || e.target.id === 'duelBtn')) return;

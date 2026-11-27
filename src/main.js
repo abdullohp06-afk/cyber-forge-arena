@@ -5,6 +5,7 @@ import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/700.css';
 import '@fontsource/jetbrains-mono/800.css';
 import './ui/style.css';
+import './ui/v2.css';
 import {start} from './ui/app.js';
 import {CLOUD, initCloud, currentUser} from './services/cloud.js';
 import {openAuth, shouldOffer} from './ui/auth.js';

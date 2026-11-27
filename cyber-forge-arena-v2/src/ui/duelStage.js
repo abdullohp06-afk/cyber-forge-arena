@@ -1,0 +1,121 @@
+// Arena clash over the painted arena (public/bg/arena.jpg; a procedural cyber-colosseum until it loads).
+// The player's weapon (left) and the rival's (right) trade blows on their own above the platform; the clash
+// point slides toward whoever is losing. hit(side) is one lunge — side 1 drives my blade in, -1 the rival's —
+// and guard(ms) raises the energy shield that reflects the next exchanges.
+import {drawWeapon, elementStyle} from './weaponArt.js';
+import {photoLayout} from './locationArt.js';
+
+export function createDuelStage(canvas, mine, theirs) {
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const ctx = canvas.getContext('2d');
+  let fit = null, W = 0, H = 0, raf = 0, running = false, last = 0, t = 0, target = 0.5, shown = 0.5, push = 0, shake = 0, cy = 0, sparks = [], rings = [], hits = 0, guardUntil = 0;
+
+  function resize() {
+    const r = canvas.getBoundingClientRect(), d = Math.min(2, devicePixelRatio || 1);
+    W = r.width; H = r.height; cy = H / 2;
+    canvas.width = Math.round(W * d); canvas.height = Math.round(H * d);
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  const clashX = () => W * (0.28 + 0.44 * shown);                          // the clash never leaves 28%..72% of the scene
+
+  function colosseum() {                                   // fallback: dark bowl, stands, two spotlights, laser ropes
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#1a1036'); g.addColorStop(0.6, '#0b0a1c'); g.addColorStop(1, '#05040c');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#2b2350'; ctx.lineWidth = 2;
+    for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.ellipse(W / 2, H * 0.95, W * (0.4 + i * 0.12), H * (0.28 + i * 0.09), 0, Math.PI, 2 * Math.PI); ctx.stroke(); }
+    ctx.globalCompositeOperation = 'lighter';
+    for (const [x, c] of [[0.1, '#00f0ff22'], [0.9, '#ff336622']]) {
+      ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(W * x, 0); ctx.lineTo(W / 2 - 60, H); ctx.lineTo(W / 2 + 60, H); ctx.closePath(); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    for (const [y, c] of [[0.78, '#00f0ff'], [0.86, '#ff3366']]) { ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0, H * y); ctx.lineTo(W, H * y); ctx.stroke(); }
+    return H * 0.82;
+  }
+
+  function frame(now) {
+    if (!running) return;
+    if (!canvas.isConnected) { running = false; return; }
+    const dt = Math.min(50, now - last), f = dt / 16.7;
+    last = now; t += dt / 1000;
+    shown += (target - shown) * Math.min(1, 0.12 * f);
+    push *= Math.pow(0.82, f); shake *= Math.pow(0.8, f);
+    for (const p of sparks) { p.vy += 0.3 * f; p.x += p.vx * f; p.y += p.vy * f; p.life -= f; }
+    sparks = sparks.filter(p => p.life > 0);
+    for (const r of rings) { r.r += 4 * f; r.life -= 0.05 * f; }
+    rings = rings.filter(r => r.life > 0);
+
+    ctx.save();
+    if (shake > 0.3 && !reduced) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    ctx.fillStyle = '#000'; ctx.fillRect(-10, -10, W + 20, H + 20);
+    const L = photoLayout('arena', W, H, 0.86);
+    let floor;
+    if (L) { ctx.drawImage(L.im, L.dx, L.dy, L.dw, L.dh); floor = L.ay; } else floor = colosseum();
+    const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, W * 0.7);
+    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.65)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+    cy = Math.min(floor - 34, H * 0.5);
+    const cx = clashX(), base = Math.min(W * 0.5, 230), lunge = push * 10, bob = reduced ? 0 : Math.sin(t * 3) * 2;
+    // Each blade reaches 0.85 of its size behind the clash: sized to the room left on its side, both stay fully on screen.
+    // lunge goes negative when the rival is the one driving forward, so the clamp has to cover both signs.
+    const sizeMe = Math.min(base, (cx - 10 + Math.min(0, lunge)) / 0.9), sizeOpp = Math.min(base, (W - cx - 10 - Math.max(0, lunge)) / 0.9);
+    fit = {left: cx - 4 - sizeMe * 0.85, right: cx + 4 + lunge + sizeOpp * 0.85, W};
+    ctx.save(); ctx.translate(cx - 4 + lunge * 0.4, cy + bob); ctx.rotate(-0.14 - push * 0.12);      // my blade drives forward
+    drawWeapon(ctx, mine, -sizeMe * 0.35, 0, sizeMe, {t, heat: push * 0.7}); ctx.restore();
+    ctx.save(); ctx.translate(cx + 4 + lunge, cy - bob); ctx.rotate(0.14 + push * 0.18);             // the rival's blade is shoved back
+    drawWeapon(ctx, theirs, sizeOpp * 0.35, 0, sizeOpp, {t, flip: true}); ctx.restore();
+
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, 30 + push * 30);
+    glow.addColorStop(0, 'rgba(255,255,255,0.95)'); glow.addColorStop(0.4, elementStyle(mine.el.n).a + '88'); glow.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = glow; ctx.fillRect(cx - 70, cy - 70, 140, 140);
+    if (!reduced && Math.random() < 0.35) {                                // idle crackle where the blades grind
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(cx, cy);
+      for (let k = 0; k < 4; k++) ctx.lineTo(cx + (Math.random() - 0.5) * 30, cy + (Math.random() - 0.5) * 30);
+      ctx.stroke();
+    }
+    for (const r of rings) { ctx.globalAlpha = r.life; ctx.strokeStyle = r.c; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.ellipse(r.x, r.y, r.r, r.r * 0.55, 0, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.lineCap = 'round'; ctx.lineWidth = 2;
+    for (const p of sparks) {
+      ctx.globalAlpha = Math.min(1, p.life / 20); ctx.strokeStyle = p.c;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 1.5, p.y - p.vy * 1.5); ctx.stroke();
+    }
+    if (performance.now() < guardUntil) {                                  // energy shield: a hex dome in front of my blade
+      const r = 46 + Math.sin(t * 18) * 3, gx = cx - 26;
+      ctx.strokeStyle = '#00f0ff'; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      for (let k = 0; k <= 6; k++) { const a = -Math.PI / 2 + k * Math.PI / 3; k ? ctx.lineTo(gx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r) : ctx.moveTo(gx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r); }
+      ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = '#00f0ff22'; ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+    raf = requestAnimationFrame(frame);
+  }
+
+  return {
+    start() { if (running) return; running = true; resize(); last = performance.now(); raf = requestAnimationFrame(frame); },
+    stop() { running = false; cancelAnimationFrame(raf); },
+    resize,
+    setRatio(r) { target = Math.min(1, Math.max(0, r)); },               // player share of the total power
+    /** One lunge. side: 1 = my blade drives in, -1 = the rival's. power scales the sparks and the recoil. */
+    hit(side = 1, power = 1) {
+      hits++; push = side * power; shake = 5 * power;
+      const c = elementStyle(mine.el.n).a, n = reduced ? 3 : Math.round(14 * power), x = clashX() + 10 * side, y = cy;
+      rings.push({x, y, r: 6, life: 1, c: side > 0 ? c : '#ff3366'});
+      for (let i = 0; i < n; i++) {
+        const a = -Math.PI / 2 + (Math.random() - 0.3) * 2.4, v = (3 + Math.random() * 7) * power;
+        sparks.push({x, y, vx: Math.cos(a) * v + 3 * side, vy: Math.sin(a) * v, life: 25 + Math.random() * 20, c: i % 3 ? c : '#ffffff'});
+      }
+      if (sparks.length > 220) sparks.splice(0, sparks.length - 220);
+    },
+    /** Raise the shield dome for `ms` of real time. */
+    guard(ms = 1200) {
+      guardUntil = performance.now() + ms;
+      rings.push({x: clashX() - 26, y: cy, r: 10, life: 1, c: '#00f0ff'});
+    },
+    debug: () => ({shown, hits, sparks: sparks.length, running, fit, guarded: performance.now() < guardUntil}),
+  };
+}

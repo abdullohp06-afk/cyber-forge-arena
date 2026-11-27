@@ -13,7 +13,8 @@ export const fresh = () => ({
   dex: {}, dexFilled: false,                                           // Каталог находок: "loc:slot:name" → best rank; filled once from old saves
   ach: {claimed: [], seen: []},                                        // Достижения: claimed rewards, and the ones already announced
   boxes: {standard: 0, military: 0, titanium: 0},                      // free containers won from achievements
-  tut: 0,                                                              // onboarding step (99 = done)
+  tut: 0,
+  faction: null, clan: null, prestige: 0, runes: [], flux: 2, boss: null, settings: {crt: true, haptics: true},                                                              // onboarding step (99 = done)
   stats: {forges: 0, rerolls: 0, overdrives: 0, duels: 0, wins: 0, losses: 0, credits: 0,
           tiers: [0, 0, 0, 0, 0, 0], tags: {}, best: null, maxCombo: 0, tempers: 0, temperStreak: 0, temperBest: 0, maxStreak: 0},
 });
@@ -35,7 +36,11 @@ export function load(storage = globalThis.localStorage) {
       return {...f, ...s, up: {...f.up, ...s.up}, stats: {...f.stats, ...s.stats}, gyro: g,
               dex: sanitizeDex(s.dex), dexFilled: s.dexFilled === true, ach: sanitizeAch(s.ach),
               boxes: {standard: count(b.standard), military: count(b.military), titanium: count(b.titanium)},
-              tut: Number.isInteger(s.tut) ? s.tut : (s.stats?.forges > 0 ? 99 : 0)};   // players from before onboarding skip it
+              tut: Number.isInteger(s.tut) ? s.tut : (s.stats?.forges > 0 ? 99 : 0),
+              runes: Array.isArray(s.runes) ? s.runes : [],
+              flux: Number.isFinite(s.flux) ? s.flux : 2,
+              prestige: Number.isFinite(s.prestige) ? s.prestige : 0,
+              settings: {crt: true, haptics: true, ...(s.settings || {})}};   // players from before onboarding skip it
     }
   } catch { /* private mode or a broken save: start over rather than crash */ }
   return fresh();
