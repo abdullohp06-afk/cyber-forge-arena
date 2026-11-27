@@ -1,5 +1,5 @@
 // Telegram Mini App SDK bridge: user profile, native Haptics, deep links (duel & P2P trade).
-const BOT_USERNAME = 'CyberForgeArenaBot'; // Замени на @username своего бота в BotFather
+const BOT_USERNAME = import.meta.env.VITE_BOT_USERNAME || 'CyberForgeArenaBot';
 
 export const tg = typeof window !== 'undefined' ? (window.Telegram?.WebApp || null) : null;
 

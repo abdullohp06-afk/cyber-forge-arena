@@ -14,3 +14,5 @@ android/**/build/
 
 .vercel
 .playwright-mcp/
+
+.env.local
